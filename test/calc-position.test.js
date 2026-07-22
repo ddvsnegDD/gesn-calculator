@@ -169,6 +169,30 @@ test('з/п машиниста = тариф(DriverCode) × LabourMach × маш.
   assert.equal(res.totals.fot, round2(res.totals.labor + res.totals.drivers_salary));
 });
 
+test('кран башенный в 12-01-015-03: цена маш.-ч и ОТм до копейки', () => {
+  // Числа зафиксированы после ручной проверки по сплит-форме 2 кв. 2026:
+  // тариф 4-100-060 = 982,04 руб/чел.-ч ровно, LabourMach = 1,
+  // цена маш.-ч без з/п = 1 036,96 (в сплит-форме задана напрямую, индекса нет).
+  const res = calcPosition(db, {
+    base_type: 'ГЭСН', work_code: '12-01-015-03', quantity: 48.9941, period_id: PERIOD,
+  });
+  const crane = lineOf(res, '91.05.01-017');
+  assert.equal(crane.driver_code, '4-100-060');
+  assert.equal(crane.driver_rate, 982.04);
+  assert.equal(crane.labour_mach, 1);
+  assert.equal(crane.machine_price, 1036.96);
+  assert.equal(crane.salary_part, 982.04);
+  assert.equal(crane.price, 2019);
+  assert.equal(crane.quantity_total, 3.919528);
+  assert.equal(crane.line_cost, 7913.53);
+  assert.equal(crane.drivers_salary, 3849.13);
+
+  // сумма ОТм по всем машинам совпадает с агрегатом
+  assert.equal(lineOf(res, '91.05.05-015').drivers_salary, 2405.71);
+  assert.equal(lineOf(res, '91.14.02-001').drivers_salary, 2865.49);
+  assert.equal(res.totals.drivers_salary, 9120.33);
+});
+
 test('«голый» код 1 не тарифицируется молча: line_cost = null и флаг', () => {
   const res = calcPosition(db, {
     base_type: 'ГЭСН', work_code: '01-01-129-11', quantity: 1, period_id: PERIOD,

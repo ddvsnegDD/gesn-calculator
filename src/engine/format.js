@@ -46,12 +46,19 @@ export function formatPosition(result) {
       lastArticle = l.article;
     }
     say(line(rows[i]));
+    if (l.machine_price !== undefined && l.machine_price !== null) {
+      say(`    └ цена маш.-ч: ${money(l.machine_price)} без з/п + ${money(l.salary_part)} з/п машиниста = ${money(l.price)}`);
+    }
     if (l.driver_code) {
-      say(`    └ ОТм: ${l.driver_code} × ${l.labour_mach} × ${money(l.driver_rate)} = ${money(l.salary_part)} руб/маш.-ч,` +
-          ` на объём ${money(l.drivers_salary)}`);
+      say(`    └ ОТм: тариф ${l.driver_code} ${money(l.driver_rate)} руб/чел.-ч × ${l.labour_mach} чел.-ч на маш.-ч` +
+          ` = ${money(l.salary_part)} руб/маш.-ч; на ${qty(l.quantity_total)} маш.-ч = ${money(l.drivers_salary)} руб`);
     }
     if (l.base_price !== null && l.index_value !== null) {
-      say(`    └ базисная ${money(l.base_price)} × индекс ${l.index_value}`);
+      // у машин индексируется цена БЕЗ з/п машиниста, её и показываем
+      const indexed = l.machine_price ?? l.price ?? l.base_price * l.index_value;
+      say(`    └ базисная ${money(l.base_price)} × индекс ${l.index_value} = ${money(indexed)}`);
+    } else if (l.base_price !== null && l.price !== null) {
+      say(`    └ базисная ${money(l.base_price)} на 01.01.2022; текущая цена задана в сплит-форме напрямую`);
     }
     if (l.note) say(`    └ ${l.note}`);
   });
