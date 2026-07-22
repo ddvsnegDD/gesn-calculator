@@ -14,14 +14,17 @@
     "verify": "node src/verify/verify-etalon.js",
     "test": "node --test test/*.test.js",
     "dev": "node src/web/server.js",
-    "index": "node src/search/build-index.js"
+    "index": "node src/search/build-index.js",
+    "ai:smoke": "node src/ai/smoke-tool-use.js"
   },
   "license": "UNLICENSED",
   "dependencies": {
     "better-sqlite3": "^13.0.1",
+    "dotenv": "^17.4.2",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "multer": "^2.2.0",
+    "openai": "^6.48.0",
     "saxes": "^6.0.0"
   }
 }
