@@ -8,39 +8,38 @@ const { verified } = await verifyEtalon(db);
 
 /**
  * Приёмочный критерий MVP (раздел 8 ТЗ): позиции 1.1 и 1.4 воспроизводятся
- * по слоям 1-3. Известные расхождения — только замена материала, сделанная
- * сметчиком вручную в самом эталоне (рубероид обнулён и заменён плёнкой).
+ * по слоям 1-3. Замена материала, сделанная сметчиком в эталоне (рубероид →
+ * плёнка), читается из ЛСР и подаётся движку как вход.
  */
-const SUBSTITUTED = ['12.1.02.06-0022', '12.1.01.03-0033'];
-
 test('обе верификационные позиции разобраны из эталона', () => {
   assert.equal(verified.length, 2);
   assert.equal(verified[0].etalon.code, 'ГЭСН27-04-001-01');
   assert.equal(verified[1].etalon.code, 'ГЭСН12-01-015-03');
 });
 
-test('позиция 1.1 сходится полностью по всем трём слоям', () => {
-  const bad = verified[0].checks.filter((c) => c.status !== 'СОШЛОСЬ');
-  assert.deepEqual(bad.map((c) => c.item), []);
-});
-
-test('слой 2 (базисные цены) и слой 3 (НР/СП) сходятся в обеих позициях', () => {
+test('расхождений нет ни в одной позиции ни в одном слое', () => {
   for (const v of verified) {
-    const bad = v.checks.filter((c) => c.layer !== 1 && c.status !== 'СОШЛОСЬ');
-    assert.deepEqual(bad.map((c) => c.item), [], `позиция ${v.etalon.no}`);
+    const bad = v.checks.filter((c) => c.status !== 'СОШЛОСЬ');
+    assert.deepEqual(bad.map((c) => `${c.item}: эталон ${c.etalon}, движок ${c.engine}`), [],
+      `позиция ${v.etalon.no}`);
   }
 });
 
-test('в слое 1 расходятся только вручную заменённые материалы', () => {
+test('каждый слой реально проверен, а не пуст', () => {
   for (const v of verified) {
-    const bad = v.checks.filter((c) => c.layer === 1 && c.status !== 'СОШЛОСЬ');
-    for (const c of bad) {
-      assert.ok(
-        SUBSTITUTED.some((code) => c.item.includes(code)),
-        `неожиданное расхождение слоя 1 в позиции ${v.etalon.no}: ${c.item}`
-      );
+    for (const layer of [1, 2, 3]) {
+      assert.ok(v.checks.some((c) => c.layer === layer), `позиция ${v.etalon.no}, слой ${layer}`);
     }
   }
+});
+
+test('замена материала в 1.4 распознана и учтена', () => {
+  const pos = verified[1];
+  const line = pos.result.lines.find((l) => l.resource_code === '12.1.02.06-0022');
+  assert.equal(line.selected_code, '12.1.01.03-0033');
+  assert.equal(line.quantity_total, 5634.3215);
+  assert.equal(line.base_price, 86.59);
+  assert.ok(line.line_cost > 0);
 });
 
 test.after(() => db.close());

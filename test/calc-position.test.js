@@ -277,3 +277,42 @@ function round2(x) {
 }
 
 test.after(() => db.close());
+
+test('замена материала: код, расход и цена берутся из замены', () => {
+  const plain = calcPosition(db, {
+    base_type: 'ГЭСН', work_code: '12-01-015-03', quantity: 1, period_id: PERIOD,
+  });
+  const swapped = calcPosition(db, {
+    base_type: 'ГЭСН', work_code: '12-01-015-03', quantity: 1, period_id: PERIOD,
+    material_substitutions: { '12.1.02.06-0022': { code: '12.1.01.03-0033', quantity: 115 } },
+  });
+  const before = lineOf(plain, '12.1.02.06-0022');
+  const after = lineOf(swapped, '12.1.02.06-0022');
+
+  assert.equal(before.selected_code, undefined);
+  assert.equal(after.selected_code, '12.1.01.03-0033');
+  assert.equal(after.quantity_total, 115);
+  assert.notEqual(after.base_price, before.base_price);
+  assert.equal(after.line_cost, round2(after.quantity_total * after.price));
+
+  // без указания расхода сохраняется нормативный
+  const keepQty = calcPosition(db, {
+    base_type: 'ГЭСН', work_code: '12-01-015-03', quantity: 1, period_id: PERIOD,
+    material_substitutions: { '12.1.02.06-0022': { code: '12.1.01.03-0033' } },
+  });
+  assert.equal(lineOf(keepQty, '12.1.02.06-0022').quantity_total, before.quantity_total);
+
+  // расход 0 исключает материал из расчёта
+  const dropped = calcPosition(db, {
+    base_type: 'ГЭСН', work_code: '12-01-015-03', quantity: 1, period_id: PERIOD,
+    material_substitutions: { '12.1.02.06-0022': { code: '12.1.01.03-0033', quantity: 0 } },
+  });
+  assert.equal(lineOf(dropped, '12.1.02.06-0022').line_cost, 0);
+});
+
+test('заменять труд и машины нельзя', () => {
+  assert.throws(() => calcPosition(db, {
+    base_type: 'ГЭСН', work_code: '12-01-015-03', quantity: 1, period_id: PERIOD,
+    material_substitutions: { '91.05.01-017': { code: '12.1.01.03-0033' } },
+  }), /Заменять можно только материалы/);
+});

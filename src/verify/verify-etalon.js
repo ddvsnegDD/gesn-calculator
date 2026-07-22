@@ -65,6 +65,25 @@ export function verifyPosition(db, etalon, periodId) {
     }
   }
 
+  // Замена учтённого материала: сметчик обнуляет ресурс нормы и добавляет
+  // взамен другой (в 1.4 — рубероид → плёнка). Распознаём по паре «расход 0
+  // у ресурса нормы» + «подпозиция, не относящаяся ни к одному абстрактному
+  // ресурсу» и подаём движку как вход, а не подгоняем расчёт.
+  const normCodes = new Set(
+    db.prepare(
+      `SELECT wr.resource_code FROM work_resources wr JOIN works w ON w.id = wr.work_id
+       WHERE w.base_type = ? AND w.code = ?`
+    ).pluck().all(etalon.base_type, etalon.work_code)
+  );
+  const orphanSubs = etalon.subpositions.filter((s) => !abstractCodes.some((c) => s.code.startsWith(c)));
+  const zeroedResources = etalon.resources.filter((r) => r.total === 0 && normCodes.has(r.code));
+  const substitutions = {};
+  zeroedResources.forEach((res, i) => {
+    const sub = orphanSubs[i];
+    if (sub) substitutions[res.code] = { code: sub.code, quantity: sub.per_unit };
+  });
+  const substitutedSubCodes = new Set(Object.values(substitutions).map((s) => s.code));
+
   const result = calcPosition(db, {
     base_type: etalon.base_type,
     work_code: etalon.work_code,
@@ -73,6 +92,7 @@ export function verifyPosition(db, etalon, periodId) {
     territory_type: 'Территория',
     main_materials: mainMaterials,
     main_material_quantities: mainQuantities,
+    material_substitutions: substitutions,
     options: { norm_coefficient: etalon.coefficient ?? 1 },
   });
 
@@ -82,10 +102,22 @@ export function verifyPosition(db, etalon, periodId) {
   // ---- слой 1: ресурсная часть -------------------------------------------
   for (const res of etalon.resources) {
     const line = byCode.get(res.code);
-    const zeroed = res.total === 0 && line && line.quantity_total > 0;
+    const subst = substitutions[res.code];
+
+    if (subst) {
+      // ресурс нормы заменён: сверяем со строкой замены, а не с обнулённой строкой
+      const subRow = etalon.subpositions.find((s) => s.code === subst.code);
+      checks.push(compare(1, `расход ${res.code} → ${subst.code} (замена)`, subRow.total,
+        line ? line.quantity_total : null,
+        'в эталоне ресурс обнулён и заменён другим материалом; замена подана движку как вход'));
+      if (subRow.base_price !== null) {
+        checks.push(compare(2, `базисная цена ${subst.code} (замена)`, subRow.base_price, line ? line.base_price : null));
+      }
+      continue;
+    }
+
     checks.push(
-      compare(1, `расход ${res.code} (${res.measure_unit ?? '—'})`, res.total, line ? line.quantity_total : null,
-        zeroed ? 'в эталоне расход обнулён вручную — ресурс заменён другим материалом, в норме он присутствует' : null)
+      compare(1, `расход ${res.code} (${res.measure_unit ?? '—'})`, res.total, line ? line.quantity_total : null)
     );
     if (res.driver_code && line) {
       const hours = line.labour_mach === null || line.labour_mach === undefined
@@ -96,8 +128,9 @@ export function verifyPosition(db, etalon, periodId) {
     }
   }
 
-  // подпозиции — выбранный основной материал
+  // подпозиции — выбранный основной материал (строки замены уже сверены выше)
   for (const sub of etalon.subpositions) {
+    if (substitutedSubCodes.has(sub.code)) continue;
     const owner = abstractCodes.find((c) => sub.code.startsWith(c));
     const line = owner ? byCode.get(owner) : null;
     checks.push(
@@ -119,6 +152,7 @@ export function verifyPosition(db, etalon, periodId) {
   // ---- слой 2: базисные цены на 01.01.2022 --------------------------------
   for (const res of etalon.resources) {
     if (res.base_price === null) continue;
+    if (substitutions[res.code]) continue; // сверено выше по строке замены
     const line = byCode.get(res.code);
     checks.push(compare(2, `базисная цена ${res.code}`, res.base_price, line ? line.base_price : null));
   }

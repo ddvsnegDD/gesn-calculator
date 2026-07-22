@@ -83,6 +83,10 @@ export function nrspKey(code) {
  *   main_materials — { abstract_code: fsbc_code } выбор основных материалов;
  *   main_material_quantities — { abstract_code: расход } для ресурсов с «П»;
  *   resource_quantities — { resource_code: расход } для обычных ресурсов с «П»;
+ *   material_substitutions — { код_из_нормы: { code, quantity? } } замена учтённого
+ *     материала на другой (обычная операция сметчика: норма несёт рубероид, а по
+ *     проекту кладётся плёнка). Расход по умолчанию сохраняется нормативный;
+ *     quantity: 0 просто исключает материал из расчёта;
  *   options.vat — начислить НДС 20% на итог;
  *   options.norm_coefficient — множитель к расходам всех ресурсов нормы;
  *   options.nr_code / options.sp_code — выбор норматива, если вариантов несколько.
@@ -98,6 +102,7 @@ export function calcPosition(db, input) {
     main_materials = {},
     main_material_quantities = {},
     resource_quantities = {},
+    material_substitutions = {},
     options = {},
   } = input;
 
@@ -130,6 +135,7 @@ export function calcPosition(db, input) {
       main_materials,
       main_material_quantities,
       resource_quantities,
+      material_substitutions,
       flags,
     });
     lines.push(line);
@@ -217,7 +223,16 @@ export function calcPosition(db, input) {
 
 /** Одна строка расчёта: ресурс → расход → цена → сумма. */
 function buildLine(q, res, ctx) {
-  const { volume, kNorm, period_id, main_materials, main_material_quantities, resource_quantities, flags } = ctx;
+  const { volume, kNorm, period_id, main_material_quantities, resource_quantities, material_substitutions, flags } = ctx;
+
+  // Замена учтённого материала на другой (не касается труда, машин и
+  // абстрактных ресурсов — у последних выбор идёт через main_materials).
+  const subst = res.is_abstract ? undefined : material_substitutions[res.resource_code];
+  if (subst && res.resource_type !== 'material' && res.resource_type !== 'equipment') {
+    throw new Error(
+      `Заменять можно только материалы и оборудование, а ${res.resource_code} — ${res.resource_type}`
+    );
+  }
 
   const line = {
     resource_code: res.resource_code,
@@ -238,7 +253,10 @@ function buildLine(q, res, ctx) {
   };
 
   // --- расход --------------------------------------------------------------
-  let perUnit = res.quantity;
+  // у заменённого материала расход берётся из замены, иначе остаётся нормативным
+  let perUnit = subst && subst.quantity !== undefined && subst.quantity !== null
+    ? Number(subst.quantity)
+    : res.quantity;
   if (perUnit === null) {
     // Quantity="П" — расход задаёт пользователь
     const override = res.is_abstract
@@ -266,11 +284,20 @@ function buildLine(q, res, ctx) {
       return mainMaterialLine(q, res, line, ctx);
     default: {
       line.article = articleOf(res.resource_type);
-      const p = currentPrice(q.price.get(period_id, res.resource_code));
-      applyPrice(line, p, flags);
-      const mat = q.material.get(res.resource_code);
-      if (mat && !line.name) line.name = mat.name;
-      if (mat && !line.measure_unit) line.measure_unit = mat.measure_unit;
+      const code = subst ? subst.code : res.resource_code;
+      if (subst) {
+        line.selected_code = subst.code;
+        line.substituted = true;
+        line.note = `замена материала ${res.resource_code} → ${subst.code}` +
+          (subst.quantity !== undefined && subst.quantity !== null ? `, расход задан пользователем` : '');
+      }
+      const mat = q.material.get(code);
+      if (subst) line.selected_name = mat?.name ?? null;
+      if (mat) {
+        if (!line.name || subst) line.name = subst ? line.name : (line.name ?? mat.name);
+        if (subst || !line.measure_unit) line.measure_unit = mat.measure_unit ?? line.measure_unit;
+      }
+      applyPrice(line, currentPrice(q.price.get(period_id, code)), flags);
       return line;
     }
   }
