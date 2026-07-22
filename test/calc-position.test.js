@@ -316,3 +316,51 @@ test('заменять труд и машины нельзя', () => {
     material_substitutions: { '91.05.01-017': { code: '12.1.01.03-0033' } },
   }), /Заменять можно только материалы/);
 });
+
+test('единицы абстрактного ресурса и выбранной марки: без расхода не считаем', () => {
+  // мастика в норме — 0.05 т, а марка 01.2.03.03-0122 считается в кг:
+  // перемножать т на цену за кг нельзя, расход обязан задать пользователь
+  const res = calcPosition(db, {
+    base_type: 'ГЭСН', work_code: '12-01-015-03', quantity: 1, period_id: PERIOD,
+    main_materials: { '01.2.03.03': '01.2.03.03-0122' },
+  });
+  const line = lineOf(res, '01.2.03.03');
+  assert.ok(res.flags.includes(FLAGS.UNIT_MISMATCH));
+  assert.equal(line.measure_unit, 'кг');
+  assert.equal(line.norm_measure_unit, 'т');
+  assert.equal(line.quantity_total, null);
+  assert.equal(line.line_cost, null);
+  assert.equal(res.totals.main_materials, 0);
+});
+
+test('пользовательский расход перекрывает нормативный, а не только «П»', () => {
+  const res = calcPosition(db, {
+    base_type: 'ГЭСН', work_code: '12-01-015-03', quantity: 48.9941, period_id: PERIOD,
+    main_materials: { '01.2.03.03': '01.2.03.03-0122' },
+    main_material_quantities: { '01.2.03.03': 50 },
+  });
+  const line = lineOf(res, '01.2.03.03');
+  assert.deepEqual(res.flags, []);
+  assert.equal(line.quantity_per_unit, 50);           // а не 0.05 из нормы
+  assert.equal(line.quantity_total, 2449.705);
+  assert.equal(line.line_cost, round2(2449.705 * line.price));
+
+  // то же для обычного ресурса с числовым расходом в норме
+  const roofing = calcPosition(db, {
+    base_type: 'ГЭСН', work_code: '12-01-015-03', quantity: 1, period_id: PERIOD,
+    resource_quantities: { '12.1.02.06-0022': 120 },
+  });
+  assert.equal(lineOf(roofing, '12.1.02.06-0022').quantity_per_unit, 120);
+});
+
+test('единица совпадает — расход берётся из нормы без вмешательства', () => {
+  const res = calcPosition(db, {
+    base_type: 'ГЭСН', work_code: '12-01-015-03', quantity: 1, period_id: PERIOD,
+    main_materials: { '01.2.03.03': '01.2.03.03-0112' },   // эта марка тоже в тоннах
+  });
+  const line = lineOf(res, '01.2.03.03');
+  assert.ok(!res.flags.includes(FLAGS.UNIT_MISMATCH));
+  assert.equal(line.measure_unit, 'т');
+  assert.equal(line.quantity_total, 0.05);
+  assert.ok(line.line_cost > 0);
+});

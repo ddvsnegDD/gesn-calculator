@@ -21,6 +21,7 @@ export const FLAGS = {
   NRSP_AMBIGUOUS: 'требует_выбора_норматива',
   NRSP_MISSING: 'норматив_не_найден',
   PRICE_MISSING: 'цена_не_найдена',
+  UNIT_MISMATCH: 'единицы_измерения_не_совпадают',
 };
 
 /** Округление до 6 знаков — снимает артефакты двоичной арифметики. */
@@ -253,23 +254,29 @@ function buildLine(q, res, ctx) {
   };
 
   // --- расход --------------------------------------------------------------
-  // у заменённого материала расход берётся из замены, иначе остаётся нормативным
-  let perUnit = subst && subst.quantity !== undefined && subst.quantity !== null
-    ? Number(subst.quantity)
-    : res.quantity;
-  if (perUnit === null) {
-    // Quantity="П" — расход задаёт пользователь
-    const override = res.is_abstract
-      ? main_material_quantities[res.resource_code]
-      : resource_quantities[res.resource_code];
-    if (override === undefined || override === null) {
-      flags.add(FLAGS.QUANTITY_BY_PROJECT);
-      line.note = 'расход по проекту не задан';
-      line.article = res.is_abstract ? 'ОМ' : articleOf(res.resource_type);
-      return line;
-    }
+  // Приоритет: расход из замены → расход, заданный пользователем → норма.
+  // Пользовательский расход перекрывает норму всегда, а не только когда в
+  // норме стоит «П»: у основного материала единица измерения выбранной марки
+  // часто отличается от единицы абстрактного ресурса, и расход приходится
+  // задавать заново.
+  const override = res.is_abstract
+    ? main_material_quantities[res.resource_code]
+    : resource_quantities[res.resource_code];
+
+  let perUnit;
+  if (subst && subst.quantity !== undefined && subst.quantity !== null) perUnit = Number(subst.quantity);
+  else if (override !== undefined && override !== null) {
     perUnit = Number(override);
-    line.note = 'расход задан пользователем (в норме «П»)';
+    line.note = res.quantity === null
+      ? 'расход задан пользователем (в норме «П»)'
+      : `расход задан пользователем (в норме ${res.quantity} ${res.measure_unit ?? ''})`.trim();
+  } else perUnit = res.quantity;
+
+  if (perUnit === null || perUnit === undefined || Number.isNaN(perUnit)) {
+    flags.add(FLAGS.QUANTITY_BY_PROJECT);
+    line.note = 'расход по проекту не задан';
+    line.article = res.is_abstract ? 'ОМ' : articleOf(res.resource_type);
+    return line;
   }
   line.quantity_per_unit = r6(perUnit * kNorm);
   line.quantity_total = r6(line.quantity_per_unit * volume);
@@ -410,10 +417,33 @@ function mainMaterialLine(q, res, line, ctx) {
   }
   line.selected_code = chosen;
   const mat = q.material.get(chosen);
+  const normUnit = res.measure_unit;
+  const matUnit = mat?.measure_unit ?? null;
   if (mat) {
     line.selected_name = mat.name;
-    line.measure_unit = mat.measure_unit ?? line.measure_unit;
+    line.measure_unit = matUnit ?? line.measure_unit;
   }
+
+  // Технологическая группа объединяет взаимозаменяемые материалы, но единица
+  // измерения у них сплошь и рядом другая, чем у абстрактного ресурса нормы
+  // (в базе таких пар 32%: «т» → «шт», «м3» → «м» и т.п.). Перемножать норму
+  // в тоннах на цену за килограмм нельзя, поэтому расход обязан задать
+  // пользователь — уже в единицах выбранного материала.
+  const unitsDiffer = Boolean(normUnit && matUnit && normUnit !== matUnit);
+  const userSetQuantity = Object.prototype.hasOwnProperty.call(ctx.main_material_quantities, res.resource_code);
+  if (unitsDiffer) {
+    line.norm_measure_unit = normUnit;
+    if (!userSetQuantity) {
+      ctx.flags.add(FLAGS.UNIT_MISMATCH);
+      line.quantity_per_unit = null;
+      line.quantity_total = null;
+      line.note = `в норме расход ${res.quantity ?? '—'} ${normUnit}, а материал считается в «${matUnit}» —` +
+        ` задайте расход в ${matUnit}, пересчёт единиц система не выполняет`;
+      return line;
+    }
+    line.note = `расход задан в «${matUnit}» (в норме — ${normUnit})`;
+  }
+
   const priceInfo = currentPrice(q.price.get(ctx.period_id, chosen));
   applyPrice(line, priceInfo, ctx.flags);
   return line;

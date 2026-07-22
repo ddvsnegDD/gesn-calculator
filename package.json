@@ -12,7 +12,8 @@
     "import:split": "node src/import/import-split-form.js",
     "report": "node src/verify/report-import.js",
     "verify": "node src/verify/verify-etalon.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "dev": "node src/web/server.js"
   },
   "license": "UNLICENSED",
   "dependencies": {

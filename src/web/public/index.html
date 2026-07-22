@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Калькулятор ГЭСН-2022</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --line: #dfe3e8; --ink: #1c2430; --dim: #6b7683;
+    --accent: #1f6feb; --ok: #1a7f37; --warn: #9a6700; --bad: #b42318;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    padding: 12px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  header .period { color: var(--dim); font-size: 13px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 16px; }
+  section h2 { font-size: 15px; margin: 0 0 12px; }
+  section[hidden] { display: none; }
+  label { display: block; font-size: 13px; color: var(--dim); margin-bottom: 4px; }
+  input, select, button { font: inherit; }
+  input[type=text], input[type=number], select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff;
+  }
+  button {
+    padding: 8px 14px; border: 1px solid var(--accent); background: var(--accent); color: #fff;
+    border-radius: 6px; cursor: pointer;
+  }
+  button.secondary { background: #fff; color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .row > div { flex: 1 1 180px; }
+  .muted { color: var(--dim); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; }
+  td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  tr.group td { background: #f0f3f7; font-weight: 600; }
+  tr.note td { color: var(--dim); font-size: 12px; border-bottom: none; padding-top: 0; }
+  .hit { padding: 10px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 8px; cursor: pointer; background: #fff; }
+  .hit:hover { border-color: var(--accent); }
+  .hit .code { font-weight: 600; }
+  .flags { margin-top: 10px; }
+  .flag { display: inline-block; background: #fff4e5; color: var(--warn); border: 1px solid #f0d8b0;
+          border-radius: 999px; padding: 2px 10px; font-size: 12px; margin: 2px 4px 2px 0; }
+  .totals td:first-child { color: var(--dim); }
+  .totals tr.strong td { font-weight: 700; color: var(--ink); }
+  .delta-pos { color: var(--bad); } .delta-neg { color: var(--ok); }
+  .codes { background: #f0f3f7; border-radius: 6px; padding: 12px; font-size: 13px; }
+  .codes div { margin-bottom: 4px; }
+  .err { color: var(--bad); }
+  .pill { display: inline-block; background: #eef2f7; border-radius: 4px; padding: 1px 6px; font-size: 12px; color: var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Калькулятор ГЭСН-2022</h1>
+  <span class="period" id="periodLabel">период не выбран</span>
+  <button class="secondary" id="btnChangePeriod" hidden>Сменить период</button>
+  <button class="secondary" id="btnNewSearch" hidden>Новый поиск</button>
+</header>
+
+<main>
+  <!-- 1. Выбор/загрузка сплит-формы -->
+  <section id="s-period">
+    <h2>1. Сплит-форма (период цен)</h2>
+    <p class="muted">Расчёт всегда привязан к периоду. Сплит-форма обновляется ежеквартально.</p>
+    <div id="periodList"></div>
+    <div class="row" style="margin-top:16px">
+      <div style="flex:2 1 320px">
+        <label>Загрузить новую сплит-форму (.xlsx)</label>
+        <input type="file" id="fileInput" accept=".xlsx">
+      </div>
+      <div style="flex:0 0 auto"><button id="btnUpload">Загрузить</button></div>
+    </div>
+    <div id="uploadStatus" class="muted" style="margin-top:8px"></div>
+  </section>
+
+  <!-- 2. Поиск расценки -->
+  <section id="s-search" hidden>
+    <h2>2. Поиск расценки</h2>
+    <div class="row">
+      <div style="flex:3 1 400px">
+        <label>Код расценки или слова из названия</label>
+        <input type="text" id="searchInput" placeholder="12-01-015-03 или устройство пароизоляции">
+      </div>
+      <div style="flex:0 0 auto"><button id="btnSearch">Найти</button></div>
+    </div>
+    <div id="searchResults" style="margin-top:14px"></div>
+  </section>
+
+  <!-- 3. Карточка расчёта -->
+  <section id="s-card" hidden>
+    <h2>3. Параметры расчёта</h2>
+    <div id="workHead"></div>
+    <div class="row" style="margin-top:14px">
+      <div>
+        <label>Объём (<span id="unitLabel"></span>)</label>
+        <input type="number" id="quantity" value="1" step="any" min="0">
+      </div>
+      <div>
+        <label>Коэффициент к норме</label>
+        <input type="number" id="coefficient" value="1" step="any" min="0">
+      </div>
+      <div>
+        <label>Территория (влияет на НР)</label>
+        <select id="territory">
+          <option>Территория</option><option>МПРКС</option><option>РКС</option>
+        </select>
+      </div>
+      <div>
+        <label>НДС</label>
+        <select id="vat"><option value="0">без НДС</option><option value="1">20%</option></select>
+      </div>
+      <div>
+        <label>Рыночная цена за <span class="unitLabel"></span>, руб</label>
+        <input type="number" id="marketPrice" step="any" min="0" placeholder="из КП подрядчика">
+      </div>
+    </div>
+    <div id="abstractBlock" style="margin-top:16px"></div>
+    <div id="nrspBlock" style="margin-top:16px"></div>
+    <div id="byProjectBlock" style="margin-top:16px"></div>
+    <div style="margin-top:18px"><button id="btnCalc">Рассчитать</button></div>
+  </section>
+
+  <!-- 4. Результат -->
+  <section id="s-result" hidden>
+    <h2>4. Результат</h2>
+    <div id="resultBody"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { periodId: null, period: null, work: null, card: null, lastInput: null };
+
+const money = (x) => x === null || x === undefined
+  ? '—' : Number(x).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const num = (x) => x === null || x === undefined ? '—' : String(x);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+async function api(url, options) {
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || 'Ошибка запроса');
+  }
+  return res.json();
+}
+
+function show(...ids) {
+  for (const s of ['s-period', 's-search', 's-card', 's-result']) $(s).hidden = !ids.includes(s);
+  $('btnChangePeriod').hidden = !state.periodId;
+  $('btnNewSearch').hidden = !ids.includes('s-card') && !ids.includes('s-result');
+}
+
+// --- 1. периоды ------------------------------------------------------------
+async function loadPeriods() {
+  const { periods } = await api('/api/periods');
+  $('periodList').innerHTML = periods.length
+    ? periods.map((p) => `
+        <div class="hit" data-period="${p.id}">
+          <div class="code">${esc(p.region)} — ${p.quarter} кв. ${p.year}</div>
+          <div class="muted">тарифов труда: ${p.tariffs}, ресурсов: ${p.resources.toLocaleString('ru-RU')}
+            · загружено ${esc(String(p.imported_at).slice(0, 10))}</div>
+        </div>`).join('')
+    : '<p class="muted">Ни одной сплит-формы ещё не загружено.</p>';
+  for (const el of $('periodList').querySelectorAll('[data-period]')) {
+    el.onclick = () => selectPeriod(periods.find((p) => p.id === Number(el.dataset.period)));
+  }
+}
+
+function selectPeriod(p) {
+  state.periodId = p.id;
+  state.period = p;
+  $('periodLabel').textContent = `${p.region}, ${p.quarter} кв. ${p.year}`;
+  show('s-search');
+  $('searchInput').focus();
+}
+
+$('btnUpload').onclick = async () => {
+  const file = $('fileInput').files[0];
+  if (!file) return ($('uploadStatus').textContent = 'Выберите файл');
+  $('uploadStatus').textContent = 'Загрузка и импорт, это занимает несколько секунд…';
+  $('btnUpload').disabled = true;
+  try {
+    const form = new FormData();
+    form.append('file', file);
+    const r = await api('/api/periods', { method: 'POST', body: form });
+    $('uploadStatus').innerHTML = `Готово: период #${r.periodId}, ${esc(r.region)} — тарифов ${r.labor}, ресурсов ${r.resources}`;
+    await loadPeriods();
+  } catch (e) {
+    $('uploadStatus').innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  } finally {
+    $('btnUpload').disabled = false;
+  }
+};
+
+$('btnChangePeriod').onclick = () => { show('s-period'); loadPeriods(); };
+$('btnNewSearch').onclick = () => show('s-search');
+
+// --- 2. поиск --------------------------------------------------------------
+async function runSearch() {
+  const q = $('searchInput').value.trim();
+  if (q.length < 2) return;
+  $('searchResults').innerHTML = '<p class="muted">Ищу…</p>';
+  try {
+    const { works } = await api('/api/search?q=' + encodeURIComponent(q));
+    $('searchResults').innerHTML = works.length
+      ? works.map((w) => `
+          <div class="hit" data-base="${esc(w.base_type)}" data-code="${esc(w.code)}">
+            <div class="code">${esc(w.base_type)}${esc(w.code)} <span class="pill">${esc(w.measure_unit ?? '')}</span></div>
+            <div>${esc(w.name_full)}</div>
+            <div class="muted">сборник ${esc(w.collection_code ?? '')} ${esc(w.collection_name ?? '')}</div>
+          </div>`).join('')
+      : '<p class="muted">Ничего не найдено.</p>';
+    for (const el of $('searchResults').querySelectorAll('[data-code]')) {
+      el.onclick = () => openWork(el.dataset.base, el.dataset.code);
+    }
+  } catch (e) {
+    $('searchResults').innerHTML = `<p class="err">${esc(e.message)}</p>`;
+  }
+}
+$('btnSearch').onclick = runSearch;
+$('searchInput').onkeydown = (e) => { if (e.key === 'Enter') runSearch(); };
+
+// --- 3. карточка -----------------------------------------------------------
+async function openWork(base, code) {
+  const card = await api(`/api/work/${encodeURIComponent(base)}/${encodeURIComponent(code)}?period_id=${state.periodId}`);
+  state.card = card;
+  state.work = card.work;
+
+  $('workHead').innerHTML = `
+    <div class="code"><b>${esc(card.work.base_type)}${esc(card.work.code)}</b> — ${esc(card.work.name_full)}</div>
+    <div class="muted">ед. изм. ${esc(card.work.measure_unit)} · сборник ${esc(card.work.collection_code)}
+      ${esc(card.work.collection_name)}</div>
+    ${card.work.content_text ? `<div class="muted" style="margin-top:6px">Состав работ: ${esc(card.work.content_text)}</div>` : ''}`;
+  $('unitLabel').textContent = card.work.measure_unit ?? '';
+  for (const el of document.querySelectorAll('.unitLabel')) el.textContent = card.work.measure_unit ?? 'ед.';
+
+  // основные (неучтённые) материалы
+  $('abstractBlock').innerHTML = card.abstracts.length
+    ? '<h3 style="font-size:14px;margin:0 0 8px">Основной материал</h3>' + card.abstracts.map((a, i) => `
+        <div class="row" style="margin-bottom:10px">
+          <div style="flex:3 1 380px">
+            <label>${esc(a.name)} (ТГ ${esc(a.tg_codes.join(', '))}, кандидатов ${a.candidates.length})</label>
+            <select data-abstract="${esc(a.code)}">
+              <option value="">— не выбран —</option>
+              ${a.candidates.map((c) => `<option value="${esc(c.code)}">${esc(c.code)} · ${esc(c.name)}${c.price !== null ? ` — ${money(c.price)} руб/${esc(c.measure_unit ?? '')}` : ' — цены нет'}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label>Расход на ${esc(card.work.measure_unit)}, <span data-qty-unit="${esc(a.code)}">${esc(a.measure_unit ?? '')}</span>${a.quantity_note === 'П' ? ' (в норме «по проекту»)' : ''}</label>
+            <input type="number" step="any" min="0" data-abstract-qty="${esc(a.code)}" value="${a.quantity ?? ''}"
+              placeholder="${a.quantity_note === 'П' ? 'задайте расход' : ''}">
+            <div class="muted" data-qty-hint="${esc(a.code)}" style="font-size:12px;margin-top:4px"></div>
+          </div>
+        </div>`).join('')
+    : '';
+
+  // единица измерения кандидата часто отличается от единицы абстрактного
+  // ресурса нормы — тогда расход надо ввести заново, уже в единицах материала
+  for (const sel of $('abstractBlock').querySelectorAll('[data-abstract]')) {
+    sel.onchange = () => {
+      const code = sel.dataset.abstract;
+      const a = card.abstracts.find((x) => x.code === code);
+      const chosen = a.candidates.find((c) => c.code === sel.value);
+      const unitEl = $('abstractBlock').querySelector(`[data-qty-unit="${code}"]`);
+      const hintEl = $('abstractBlock').querySelector(`[data-qty-hint="${code}"]`);
+      const input = $('abstractBlock').querySelector(`[data-abstract-qty="${code}"]`);
+      const unit = chosen ? (chosen.measure_unit ?? '') : (a.measure_unit ?? '');
+      unitEl.textContent = unit;
+      if (chosen && a.measure_unit && chosen.measure_unit && chosen.measure_unit !== a.measure_unit) {
+        input.value = '';
+        input.placeholder = `задайте расход в ${unit}`;
+        hintEl.innerHTML = `<span class="err">В норме ${a.quantity ?? '—'} ${esc(a.measure_unit)}, ` +
+          `материал считается в «${esc(chosen.measure_unit)}» — пересчёт единиц система не делает.</span>`;
+      } else {
+        if (input.value === '' && a.quantity !== null) input.value = a.quantity;
+        hintEl.textContent = '';
+      }
+    };
+  }
+
+  // расход «по проекту» у обычных ресурсов
+  const byProject = card.resources.filter((r) => !r.is_abstract && r.quantity_note === 'П');
+  $('byProjectBlock').innerHTML = byProject.length
+    ? '<h3 style="font-size:14px;margin:0 0 8px">Расход по проекту</h3>' + byProject.map((r) => `
+        <div class="row" style="margin-bottom:10px">
+          <div style="flex:3 1 380px"><label>${esc(r.resource_code)} — ${esc(r.ref_name ?? r.end_name ?? '')}</label></div>
+          <div><input type="number" step="any" min="0" data-res-qty="${esc(r.resource_code)}" placeholder="задайте расход"></div>
+        </div>`).join('')
+    : '';
+
+  // выбор норматива, если норма допускает несколько видов работ
+  $('nrspBlock').innerHTML = card.nrsp.ambiguous
+    ? `<label>Норма допускает несколько видов работ — выберите норматив НР/СП</label>
+       <select id="nrspSelect">
+         ${card.nrsp.options.map((o, i) => `<option value="${i}">${esc(o.nr_code)} / ${esc(o.sp_code)}${o.work_type_name ? ' — ' + esc(o.work_type_name) : ''}</option>`).join('')}
+       </select>`
+    : '';
+
+  show('s-card');
+}
+
+function collectInput() {
+  const mainMaterials = {};
+  const mainQuantities = {};
+  for (const sel of document.querySelectorAll('[data-abstract]')) {
+    if (sel.value) mainMaterials[sel.dataset.abstract] = sel.value;
+  }
+  for (const inp of document.querySelectorAll('[data-abstract-qty]')) {
+    if (inp.value !== '') mainQuantities[inp.dataset.abstractQty] = Number(inp.value);
+  }
+  const resourceQuantities = {};
+  for (const inp of document.querySelectorAll('[data-res-qty]')) {
+    if (inp.value !== '') resourceQuantities[inp.dataset.resQty] = Number(inp.value);
+  }
+  const options = {
+    vat: $('vat').value === '1',
+    norm_coefficient: Number($('coefficient').value) || 1,
+  };
+  const nrspSelect = $('nrspSelect');
+  if (nrspSelect) {
+    const chosen = state.card.nrsp.options[Number(nrspSelect.value)];
+    options.nr_code = chosen.nr_code;
+    options.sp_code = chosen.sp_code;
+  }
+  return {
+    base_type: state.work.base_type,
+    work_code: state.work.code,
+    quantity: Number($('quantity').value),
+    period_id: state.periodId,
+    territory_type: $('territory').value,
+    main_materials: mainMaterials,
+    main_material_quantities: mainQuantities,
+    resource_quantities: resourceQuantities,
+    market_price_per_unit: $('marketPrice').value === '' ? null : Number($('marketPrice').value),
+    options,
+  };
+}
+
+$('btnCalc').onclick = async () => {
+  const input = collectInput();
+  state.lastInput = input;
+  try {
+    const r = await api('/api/calc', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+    });
+    renderResult(r);
+    show('s-card', 's-result');
+    $('s-result').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) {
+    $('resultBody').innerHTML = `<p class="err">${esc(e.message)}</p>`;
+    show('s-card', 's-result');
+  }
+};
+
+// --- 4. результат ----------------------------------------------------------
+const ARTICLE = { 'ОТ': 'Оплата труда рабочих', 'ЭМ': 'Эксплуатация машин', 'М': 'Материалы',
+                  'ОМ': 'Основной материал', 'справочно': 'Справочно' };
+
+function renderResult(r) {
+  let lastArticle = null;
+  const rows = [];
+  for (const l of r.lines) {
+    if (l.article !== lastArticle) {
+      rows.push(`<tr class="group"><td colspan="7">${esc(ARTICLE[l.article] ?? l.article)}</td></tr>`);
+      lastArticle = l.article;
+    }
+    rows.push(`<tr>
+      <td>${esc(l.resource_code)}${l.selected_code ? ' → ' + esc(l.selected_code) : ''}</td>
+      <td>${esc(l.selected_name ?? l.name ?? '')}</td>
+      <td>${esc(l.measure_unit ?? '')}</td>
+      <td class="num">${num(l.quantity_per_unit)}</td>
+      <td class="num">${num(l.quantity_total)}</td>
+      <td class="num">${money(l.price)}</td>
+      <td class="num">${money(l.line_cost)}</td></tr>`);
+    const notes = [];
+    if (l.driver_code) notes.push(`ОТм: тариф ${l.driver_code} ${money(l.driver_rate)} руб/чел.-ч × ${l.labour_mach} = ${money(l.salary_part)} руб/маш.-ч; на объём ${money(l.drivers_salary)} руб`);
+    if (l.base_price !== null && l.index_value !== null) notes.push(`базисная ${money(l.base_price)} × индекс ${l.index_value}`);
+    if (l.note) notes.push(l.note);
+    if (notes.length) rows.push(`<tr class="note"><td></td><td colspan="6">${esc(notes.join(' · '))}</td></tr>`);
+  }
+
+  const t = r.totals;
+  const totalRows = [
+    ['Оплата труда рабочих (ОТ)', t.labor], ['Эксплуатация машин (ЭМ)', t.machines],
+    ['в том числе з/п машинистов (ОТм)', t.drivers_salary], ['Материалы (М)', t.materials],
+    ['Основной материал', t.main_materials],
+    ['ПРЯМЫЕ ЗАТРАТЫ (ПЗ)', t.direct_costs, true], ['ФОТ (ОТ + ОТм)', t.fot, true],
+    [`Накладные расходы, ${t.overhead_pct ?? '—'}%`, t.overhead],
+    [`Сметная прибыль, ${t.profit_pct ?? '—'}%`, t.profit],
+    ['Итого без НДС', t.total_without_vat],
+  ];
+  if (r.input.vat) totalRows.push(['НДС 20%', t.vat]);
+  totalRows.push(['ВСЕГО ПО ПОЗИЦИИ', t.total, true]);
+  totalRows.push([`на единицу нормы (${r.work.measure_unit})`, t.per_norm_unit]);
+
+  const market = r.market ? `
+    <h3 style="font-size:14px;margin:18px 0 8px">Норматив против рынка</h3>
+    <table><tr><th>Показатель</th><th class="num">Значение</th></tr>
+      <tr><td>Норматив (всего)</td><td class="num">${money(r.market.normative_total)}</td></tr>
+      <tr><td>Рыночная: ${money(r.market.price_per_unit)} руб за ${esc(r.market.measure_unit)} × ${r.input.quantity}</td>
+          <td class="num">${money(r.market.market_total)}</td></tr>
+      <tr><td>Δ, руб</td><td class="num ${r.market.delta_rub >= 0 ? 'delta-pos' : 'delta-neg'}">${money(r.market.delta_rub)}</td></tr>
+      <tr><td>Δ, %</td><td class="num ${r.market.delta_rub >= 0 ? 'delta-pos' : 'delta-neg'}">${num(r.market.delta_pct)}</td></tr>
+    </table>` : '';
+
+  const materials = r.lines.filter((l) => l.selected_code || (l.article === 'М' && l.line_cost !== null))
+    .map((l) => l.selected_code ?? l.resource_code);
+
+  $('resultBody').innerHTML = `
+    <div class="muted">${esc(r.work.base_type)}${esc(r.work.code)} · объём ${r.input.quantity} ${esc(r.work.measure_unit)}
+      · ${esc(r.period.region)}, ${r.period.quarter} кв. ${r.period.year}
+      · территория ${esc(r.input.territory_type)} · к норме ${r.input.norm_coefficient} · НДС ${r.input.vat ? '20%' : 'нет'}</div>
+    ${r.flags.length ? `<div class="flags">${r.flags.map((f) => `<span class="flag">${esc(f)}</span>`).join('')}</div>` : ''}
+    <table style="margin-top:12px">
+      <tr><th>Код</th><th>Наименование</th><th>Ед.</th><th class="num">На единицу</th>
+          <th class="num">На объём</th><th class="num">Цена, руб</th><th class="num">Сумма, руб</th></tr>
+      ${rows.join('')}
+    </table>
+    <h3 style="font-size:14px;margin:18px 0 8px">Итоги</h3>
+    <table class="totals">
+      ${totalRows.map(([l, v, strong]) => `<tr class="${strong ? 'strong' : ''}"><td>${esc(l)}</td><td class="num">${money(v)}</td></tr>`).join('')}
+    </table>
+    ${market}
+    <h3 style="font-size:14px;margin:18px 0 8px">Коды для переноса в Гранд-Смету</h3>
+    <div class="codes">
+      <div><b>Расценка:</b> ${esc(r.work.base_type)}${esc(r.work.code)}</div>
+      ${materials.length ? `<div><b>Материалы:</b> ${esc(materials.join(', '))}</div>` : ''}
+      <div><b>НР:</b> ${esc(r.norms.nr_code ?? '—')}${r.norms.nr_item_no ? ` (п. ${esc(r.norms.nr_item_no)}, ${esc(r.norms.work_type_name ?? '')})` : ''} — ${t.overhead_pct ?? '—'}%</div>
+      <div><b>СП:</b> ${esc(r.norms.sp_code ?? '—')}${r.norms.sp_item_no ? ` (п. ${esc(r.norms.sp_item_no)})` : ''} — ${t.profit_pct ?? '—'}%</div>
+    </div>
+    <div style="margin-top:16px"><button id="btnExport">Экспорт в Excel</button></div>`;
+
+  $('btnExport').onclick = async () => {
+    const res = await fetch('/api/export', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state.lastInput),
+    });
+    if (!res.ok) return alert('Не удалось выгрузить файл');
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `Расчёт_${r.work.base_type}${r.work.code}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+}
+
+loadPeriods();
+</script>
+</body>
+</html>

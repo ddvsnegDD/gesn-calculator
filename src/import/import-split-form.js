@@ -46,9 +46,11 @@ export function parsePeriod(title, fileName) {
  * Разделение строк: единица 'чел.-ч' → тарифная ставка труда (колонка 8),
  * всё остальное → цена/индекс ресурса. '-' в любой колонке означает NULL.
  */
-export async function importSplitForm(db, filePath) {
+export async function importSplitForm(db, filePath, originalName = null) {
   const startedAt = new Date().toISOString();
-  const fileName = path.basename(filePath);
+  // при загрузке через веб multer кладёт файл под случайным именем,
+  // а квартал и год читаются в том числе из имени — берём исходное
+  const fileName = originalName || path.basename(filePath);
 
   const reader = new ExcelJS.stream.xlsx.WorkbookReader(filePath, {
     sharedStrings: 'cache',
