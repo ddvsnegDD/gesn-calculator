@@ -1,0 +1,14 @@
+{
+  "name": "gesn-calculator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Сметный калькулятор на базе ГЭСН-2022 (ФСНБ-2022 доп. 18), ресурсно-индексный метод",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "license": "UNLICENSED"
+}
