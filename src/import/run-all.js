@@ -7,6 +7,7 @@ import { importTechnologyGroups, importTgWorkLinks } from './import-tg.js';
 import { importCoefficients } from './import-coefficients.js';
 import { importNormsCsv } from './import-norms-csv.js';
 import { importSplitForm } from './import-split-form.js';
+import { buildSearchIndex } from '../search/build-index.js';
 
 /** Ищет сплит-форму в data/ — имя меняется каждый квартал. */
 function findSplitForm(dataRoot) {
@@ -39,6 +40,7 @@ export async function runAll({ dataDir = DATA_DIR, splitForm } = {}) {
   stats.tgLinks = await step('5/8 ключи перехода ТГ', () => importTgWorkLinks(db, dataDir));
   stats.coefficients = await step('6/8 поправочные коэффициенты', () => importCoefficients(db, dataDir));
   stats.norms = await step('8/8 нормативы НР и СП из CSV', () => importNormsCsv(db));
+  stats.search = await step('поисковый индекс (стеммы, словарь, синонимы)', () => buildSearchIndex(db));
 
   const split = splitForm ?? findSplitForm(path.dirname(dataDir) === '.' ? dataDir : path.resolve(dataDir, '..'));
   if (split) {

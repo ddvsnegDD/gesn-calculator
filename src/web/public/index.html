@@ -212,15 +212,20 @@ async function runSearch() {
   if (q.length < 2) return;
   $('searchResults').innerHTML = '<p class="muted">Ищу…</p>';
   try {
-    const { works } = await api('/api/search?q=' + encodeURIComponent(q));
-    $('searchResults').innerHTML = works.length
+    const { works, terms } = await api('/api/search?q=' + encodeURIComponent(q));
+    const notes = (terms ?? []).filter((t) => t.corrected || t.synonyms.length).map((t) =>
+      t.corrected
+        ? `«${esc(t.token)}» → искали как «${esc(t.corrected)}»`
+        : `«${esc(t.token)}» + синонимы: ${esc(t.synonyms.join(', '))}`);
+    const explain = notes.length ? `<div class="muted" style="margin-bottom:10px">${notes.join(' · ')}</div>` : '';
+    $('searchResults').innerHTML = explain + (works.length
       ? works.map((w) => `
           <div class="hit" data-base="${esc(w.base_type)}" data-code="${esc(w.code)}">
             <div class="code">${esc(w.base_type)}${esc(w.code)} <span class="pill">${esc(w.measure_unit ?? '')}</span></div>
             <div>${esc(w.name_full)}</div>
             <div class="muted">сборник ${esc(w.collection_code ?? '')} ${esc(w.collection_name ?? '')}</div>
           </div>`).join('')
-      : '<p class="muted">Ничего не найдено.</p>';
+      : '<p class="muted">Ничего не найдено.</p>');
     for (const el of $('searchResults').querySelectorAll('[data-code]')) {
       el.onclick = () => openWork(el.dataset.base, el.dataset.code);
     }

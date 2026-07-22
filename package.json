@@ -13,7 +13,8 @@
     "report": "node src/verify/report-import.js",
     "verify": "node src/verify/verify-etalon.js",
     "test": "node --test test/*.test.js",
-    "dev": "node src/web/server.js"
+    "dev": "node src/web/server.js",
+    "index": "node src/search/build-index.js"
   },
   "license": "UNLICENSED",
   "dependencies": {

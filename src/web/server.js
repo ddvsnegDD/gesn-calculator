@@ -8,20 +8,9 @@ import ExcelJS from 'exceljs';
 import { openDb, isMain } from '../db/index.js';
 import { calcPosition } from '../engine/calc-position.js';
 import { importSplitForm } from '../import/import-split-form.js';
+import { searchWorks } from '../search/query.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-
-/** Экранирование запроса для FTS5: пользователь пишет обычный текст, не синтаксис. */
-function ftsQuery(q) {
-  const tokens = q
-    .toLowerCase()
-    .split(/[^0-9a-zа-яё]+/i)
-    .filter((t) => t.length >= 2)
-    .map((t) => `"${t}"*`);
-  return tokens.join(' AND ');
-}
-
-const looksLikeCode = (q) => /^[А-Яа-яA-Za-z]*[\s-]*\d{2}[-.]\d/.test(q.trim());
 
 export function createApp(db) {
   const app = express();
@@ -64,33 +53,8 @@ export function createApp(db) {
 
   // --- поиск расценок ------------------------------------------------------
   app.get('/api/search', wrap(async (req, res) => {
-    const q = String(req.query.q ?? '').trim();
-    if (q.length < 2) return res.json({ works: [] });
-
-    const byCode = db.prepare(
-      `SELECT base_type, code, name_full, measure_unit, collection_code, collection_name
-       FROM works WHERE code = ? OR code LIKE ? ORDER BY base_type, code LIMIT 50`
-    ).all(q, `${q.replace(/^ГЭСН[а-я]*/i, '')}%`);
-
-    let byName = [];
-    if (byCode.length < 50) {
-      const match = ftsQuery(q);
-      if (match) {
-        byName = db.prepare(
-          `SELECT w.base_type, w.code, w.name_full, w.measure_unit, w.collection_code, w.collection_name
-           FROM works_fts f JOIN works w ON w.id = f.rowid
-           WHERE works_fts MATCH ? ORDER BY rank LIMIT ?`
-        ).all(match, 50 - byCode.length);
-      }
-    }
-
-    const seen = new Set(byCode.map((w) => `${w.base_type}${w.code}`));
-    const works = [...byCode];
-    for (const w of byName) {
-      const key = `${w.base_type}${w.code}`;
-      if (!seen.has(key)) { seen.add(key); works.push(w); }
-    }
-    res.json({ works });
+    const { works, terms, degraded } = searchWorks(db, req.query.q ?? '');
+    res.json({ works, terms, degraded: Boolean(degraded) });
   }));
 
   // --- карточка расценки: состав + кандидаты на основной материал ----------
