@@ -125,9 +125,36 @@ export async function runSmokeTest({ model = aiConfig.model, log = console.log }
       (finalText ? ` → «${finalText.replace(/\s+/g, ' ').slice(0, 180)}»` : ' (пустой ответ)')
   ));
 
+  // --- 5. параллельные вызовы --------------------------------------------
+  // Пайплайн обрабатывает позиции батчами, и если прокси теряет часть
+  // tool_calls, часть позиций молча останется без поиска. Проверяем отдельно:
+  // просим найти сразу две разные нормы.
+  let parallel = 0;
+  try {
+    const third = await client.chat.completions.create({
+      model,
+      messages: [
+        { role: 'system', content: 'Ты инженер-сметчик. Для каждой работы вызывай search_norms отдельно.' },
+        { role: 'user', content: 'Подбери нормы сразу на две работы: 1) устройство пароизоляции; 2) разборка кирпичных перегородок.' },
+      ],
+      tools: TOOLS,
+      tool_choice: 'auto',
+    });
+    addUsage(third.usage);
+    parallel = third.choices?.[0]?.message?.tool_calls?.length ?? 0;
+  } catch (err) {
+    parallel = -1;
+    void err;
+  }
+  checks.push(check(
+    parallel >= 1,
+    `5. Параллельные вызовы: получено tool_calls за один ответ — ${parallel < 0 ? 'ошибка запроса' : parallel}` +
+      (parallel === 1 ? ' (модель идёт по одному вызову за раз — пайплайн это выдержит, будет больше раундов)' : '')
+  ));
+
   const ok = checks.every((c) => c.ok);
   void log;
-  return { ok, checks, usage, model, finalText };
+  return { ok, checks, usage, model, parallelToolCalls: parallel, finalText };
 }
 
 if (isMain(import.meta.url)) {

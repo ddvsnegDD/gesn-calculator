@@ -15,7 +15,8 @@
     "test": "node --test test/*.test.js",
     "dev": "node src/web/server.js",
     "index": "node src/search/build-index.js",
-    "ai:smoke": "node src/ai/smoke-tool-use.js"
+    "ai:smoke": "node src/ai/smoke-tool-use.js",
+    "ai:models": "node src/ai/list-models.js"
   },
   "license": "UNLICENSED",
   "dependencies": {
