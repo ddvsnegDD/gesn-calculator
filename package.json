@@ -11,6 +11,7 @@
     "import": "node src/import/run-all.js",
     "import:split": "node src/import/import-split-form.js",
     "report": "node src/verify/report-import.js",
+    "verify": "node src/verify/verify-etalon.js",
     "test": "node --test test/*.test.js"
   },
   "license": "UNLICENSED",
