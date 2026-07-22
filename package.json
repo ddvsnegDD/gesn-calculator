@@ -8,7 +8,17 @@
     "node": ">=20"
   },
   "scripts": {
+    "import": "node src/import/run-all.js",
+    "import:split": "node src/import/import-split-form.js",
+    "report": "node src/verify/report-import.js",
     "test": "node --test test/"
   },
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "dependencies": {
+    "better-sqlite3": "^13.0.1",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "multer": "^2.2.0",
+    "saxes": "^6.0.0"
+  }
 }
