@@ -10,7 +10,7 @@ const RUNS_DIR = path.join(here, '../../runs');
 const SYSTEM_PROMPT = fs.readFileSync(path.join(here, 'prompts/match-system.md'), 'utf8');
 
 const BATCH_SIZE = 6;          // позиций за вызов (ТЗ: 5-8)
-const MAX_TOOL_CALLS = 25;     // потолок tool-вызовов на батч
+const MAX_TOOL_CALLS = 50;     // потолок tool-вызовов на батч (6 позиций × ~5 вызовов + запас)
 const BATCH_TIMEOUT_MS = 180_000;
 
 /** Пишет одну строку JSONL в лог прогона. */
@@ -45,6 +45,23 @@ export function parseModelJson(text) {
   }
 }
 
+/**
+ * Приводит ответ модели к инвариантам, не зависящим от того, как модель
+ * поняла промт: matched/uncertain без кандидата понижается до uncertain с
+ * пометкой (не выдумываем норму), а лишние поля у out_of_scope убираются.
+ */
+export function sanitizeItem(item) {
+  const out = { ...item };
+  const hasCandidate = Array.isArray(out.candidates) && out.candidates.length > 0;
+  if ((out.status === 'matched' || out.status === 'uncertain') && !hasCandidate) {
+    out.status = 'uncertain';
+    out.candidates = [];
+    out.notes = `${out.notes ? out.notes + ' ' : ''}[норма не найдена — требует ручного подбора]`;
+  }
+  if (out.status === 'out_of_scope') delete out.candidates;
+  return out;
+}
+
 const addUsage = (acc, u) => {
   if (!u) return;
   acc.prompt_tokens += u.prompt_tokens ?? 0;
@@ -74,26 +91,29 @@ async function runBatch(client, db, log, { model, vedomostContext, batch, batchI
 
   for (let round = 0; ; round++) {
     if (Date.now() > deadline) throw new Error(`таймаут батча ${batchIndex} (${BATCH_TIMEOUT_MS} мс)`);
-    if (toolCallCount > MAX_TOOL_CALLS) throw new Error(`превышен лимит tool-вызовов (${MAX_TOOL_CALLS}) в батче ${batchIndex}`);
 
-    // На первом раунде инструменты ОБЯЗАТЕЛЬНЫ: без принуждения модель отвечает
-    // по памяти и галлюцинирует коды (проверено — выдавала несуществующий
-    // 10-01-056-04). Дальше — auto: даём завершить ответ, когда данных набрано.
+    // Достигнут потолок вызовов — не роняем батч, а требуем финальный ответ
+    // без инструментов из того, что уже собрано. tool_choice:
+    //   round 0 — 'required': без принуждения модель отвечает по памяти и
+    //     галлюцинирует коды (проверено — выдавала несуществующий 10-01-056-04);
+    //   лимит достигнут — 'none': инструменты недоступны, только ответ;
+    //   иначе — 'auto': даём завершить, когда данных набрано.
+    const forceFinish = toolCallCount >= MAX_TOOL_CALLS;
     const response = await client.chat.completions.create({
       model,
       messages,
       tools: TOOL_SCHEMAS,
-      tool_choice: round === 0 ? 'required' : 'auto',
+      tool_choice: forceFinish ? 'none' : round === 0 ? 'required' : 'auto',
     });
     addUsage(usage, response.usage);
     const message = response.choices?.[0]?.message;
-    log.write({ type: 'assistant', batch: batchIndex, round, content: message?.content ?? null, tool_calls: message?.tool_calls ?? null });
+    log.write({ type: 'assistant', batch: batchIndex, round, content: message?.content ?? null, tool_calls: message?.tool_calls ?? null, forced_finish: forceFinish || undefined });
 
     const toolCalls = message?.tool_calls ?? [];
     if (!toolCalls.length) {
       const items = parseModelJson(message?.content);
       if (!items) throw new Error(`батч ${batchIndex}: не удалось разобрать JSON ответа модели`);
-      return { items, usage, toolCalls: toolCallCount };
+      return { items, usage, toolCalls: toolCallCount, hitLimit: forceFinish };
     }
 
     messages.push(message);
@@ -147,7 +167,7 @@ export async function runMatching(db, sheet, { model = aiConfig.model, batchSize
       const res = await runBatch(client, db, log, { model, vedomostContext, batch, batchIndex });
       addUsage(usage, res.usage);
       totalToolCalls += res.toolCalls;
-      for (const item of res.items) byNo.set(String(item.item_no), item);
+      for (const item of res.items) byNo.set(String(item.item_no), sanitizeItem(item));
     } catch (err) {
       log.write({ type: 'batch_error', batch: batchIndex, error: err.message, items: batch.map((b) => b.no) });
       for (const b of batch) {
