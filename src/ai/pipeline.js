@@ -252,7 +252,11 @@ export async function runMatching(db, sheet, { model = aiConfig.model, batchSize
   });
   await log.close();
 
-  return { runId: id, logFile: log.file, sheet: sheet.sheet, model, results, usage, toolCalls: totalToolCalls, cost };
+  // надёжный дамп результата рядом с логом — для сверки прогонов между собой
+  const resultFile = log.file.replace(/\.jsonl$/, '.result.json');
+  fs.writeFileSync(resultFile, JSON.stringify({ runId: id, model, sheet: sheet.sheet, cost, results }, null, 2));
+
+  return { runId: id, logFile: log.file, resultFile, sheet: sheet.sheet, model, results, usage, toolCalls: totalToolCalls, cost };
 }
 
 /** Удобная обёртка: разобрать xlsx и прогнать выбранный лист. */
