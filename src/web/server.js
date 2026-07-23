@@ -9,6 +9,7 @@ import { openDb, isMain } from '../db/index.js';
 import { calcPosition } from '../engine/calc-position.js';
 import { importSplitForm } from '../import/import-split-form.js';
 import { searchWorks } from '../search/query.js';
+import { searchMaterials } from '../search/materials.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,6 +56,12 @@ export function createApp(db) {
   app.get('/api/search', wrap(async (req, res) => {
     const { works, terms, degraded } = searchWorks(db, req.query.q ?? '');
     res.json({ works, terms, degraded: Boolean(degraded) });
+  }));
+
+  // --- поиск материалов ФСБЦ (сценарий Б: сопоставление КП с ФСБЦ) ---------
+  app.get('/api/materials', wrap(async (req, res) => {
+    const { materials } = searchMaterials(db, req.query.q ?? '', Number(req.query.limit) || 20);
+    res.json({ materials });
   }));
 
   // --- карточка расценки: состав + кандидаты на основной материал ----------

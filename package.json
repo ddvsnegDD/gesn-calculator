@@ -17,7 +17,8 @@
     "index": "node src/search/build-index.js",
     "ai:smoke": "node src/ai/smoke-tool-use.js",
     "ai:models": "node src/ai/list-models.js",
-    "ai:parse": "node src/ai/parse-vedomost.js"
+    "ai:parse": "node src/ai/parse-vedomost.js",
+    "ai:match": "node src/ai/run-matching.js"
   },
   "license": "UNLICENSED",
   "dependencies": {
