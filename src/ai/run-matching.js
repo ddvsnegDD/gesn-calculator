@@ -11,11 +11,6 @@ const STATUS_MARK = {
   matched: '✅', uncertain: '❓', out_of_scope: '⛔', included_in: '↪', error: '⚠',
 };
 
-/** Ориентировочная стоимость прогона; тарифы neuroapi неизвестны — считаем в токенах. */
-function costHint(usage) {
-  return `prompt ${usage.prompt_tokens}, completion ${usage.completion_tokens}, всего ${usage.total_tokens} токенов` +
-    ` (стоимость в рублях — по тарифам neuroapi, здесь не считается)`;
-}
 
 if (isMain(import.meta.url)) {
   if (!aiEnabled()) {
@@ -45,7 +40,15 @@ if (isMain(import.meta.url)) {
     const counts = {};
     for (const r of run.results) counts[r.status] = (counts[r.status] ?? 0) + 1;
     for (const [st, n] of Object.entries(counts)) console.log(`  ${STATUS_MARK[st] ?? '?'} ${st}: ${n}`);
-    console.log(`\nРасход: ${costHint(run.usage)}`);
+    console.log(`\nСтоимость прогона (по балансу кабинета neuroapi):`);
+    if (run.cost.usd != null) {
+      console.log(`  списано: $${run.cost.usd.toFixed(5)}` +
+        (run.cost.rub != null ? ` ≈ ${run.cost.rub} ₽ (курс ${run.cost.rate})` : ' (для рублей задайте AI_USD_RUB в .env)'));
+      console.log(`  баланс: $${run.cost.balance_before_usd?.toFixed(4)} → $${run.cost.balance_after_usd?.toFixed(4)}`);
+    } else {
+      console.log('  не удалось получить баланс кабинета (эндпоинт биллинга недоступен)');
+    }
+    console.log(`Токены (справочно, счётчик прокси недостоверен): prompt ${run.usage.prompt_tokens}, completion ${run.usage.completion_tokens}, всего ${run.usage.total_tokens}`);
     console.log(`Tool-вызовов: ${run.toolCalls}`);
   } catch (err) {
     console.error(`\n❌ ${err.message}`);

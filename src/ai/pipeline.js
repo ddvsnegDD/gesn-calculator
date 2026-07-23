@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { aiConfig, createClient } from './config.js';
 import { TOOL_SCHEMAS, executeTool } from './tools.js';
 import { parseVedomost, flattenItems } from './parse-vedomost.js';
+import { snapshotBalance, waitForCharge, runCost } from './billing.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const RUNS_DIR = path.join(here, '../../runs');
@@ -154,7 +155,9 @@ export async function runMatching(db, sheet, { model = aiConfig.model, batchSize
     totals: sheet.totals,
   };
 
-  log.write({ type: 'run_start', run_id: id, model, sheet: sheet.sheet, items: items.length });
+  // Стоимость меряем по балансу кабинета, а не по счётчикам токенов (ТЗ).
+  const balanceBefore = await snapshotBalance();
+  log.write({ type: 'run_start', run_id: id, model, sheet: sheet.sheet, items: items.length, balance_before: balanceBefore });
 
   const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   const byNo = new Map();
@@ -182,10 +185,18 @@ export async function runMatching(db, sheet, { model = aiConfig.model, batchSize
     return { ...match, source: item };
   });
 
-  log.write({ type: 'run_end', usage, tool_calls: totalToolCalls, matched: results.filter((r) => r.status === 'matched').length });
+  // total_usage у биллинга обновляется с задержкой — ждём, пока сдвинется
+  const balanceAfter = await waitForCharge(balanceBefore._usageCents);
+  const cost = runCost(balanceBefore, balanceAfter);
+
+  log.write({
+    type: 'run_end', usage, tool_calls: totalToolCalls,
+    matched: results.filter((r) => r.status === 'matched').length,
+    balance_after: balanceAfter, cost,
+  });
   await log.close();
 
-  return { runId: id, logFile: log.file, sheet: sheet.sheet, model, results, usage, toolCalls: totalToolCalls };
+  return { runId: id, logFile: log.file, sheet: sheet.sheet, model, results, usage, toolCalls: totalToolCalls, cost };
 }
 
 /** Удобная обёртка: разобрать xlsx и прогнать выбранный лист. */
