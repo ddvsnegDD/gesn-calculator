@@ -41,12 +41,20 @@ test('search_norms возвращает нормы и фильтрует по ba
   assert.ok(filtered.norms.every((n) => n.base_type === 'ГЭСНм'));
 });
 
-test('get_norm_details даёт состав работ и ресурсы', () => {
+test('get_norm_details по умолчанию — компактная сводка (экономия токенов)', () => {
   const d = executeTool(db, 'get_norm_details', { base_type: 'ГЭСН', code: '12-01-015-03' });
   assert.equal(d.measure_unit, '100 м2');
   assert.equal(d.nr_code, 'Пр/812-012.0');
   assert.ok(d.content.includes('пароизоляц') || d.content.includes('изоляц'));
-  assert.ok(d.resources.some((r) => r.abstract));       // абстрактная мастика
+  // сводка вместо полного поресурсного списка
+  assert.ok(!d.resources, 'по умолчанию полный список ресурсов не отдаётся');
+  assert.ok(d.resource_summary.machine >= 1);
+  assert.ok(d.main_materials.some((m) => m.code === '01.2.03.03')); // абстрактная мастика
+});
+
+test('get_norm_details с full_resources=true даёт полный состав', () => {
+  const d = executeTool(db, 'get_norm_details', { base_type: 'ГЭСН', code: '12-01-015-03', full_resources: true });
+  assert.ok(d.resources.some((r) => r.abstract));
   assert.ok(d.resources.some((r) => r.type === 'machine'));
 });
 

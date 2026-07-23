@@ -33,12 +33,13 @@ export const TOOL_SCHEMAS = [
     function: {
       name: 'get_norm_details',
       description:
-        'Полный состав нормы ГЭСН: ресурсы, состав работ (Content), единица измерения, абстрактные материалы, коды НР/СП. Вызывай перед выбором нормы, чтобы сверить состав работ.',
+        'Состав нормы ГЭСН для сверки: название, единица измерения, состав работ (Content), коды НР/СП, сводка ресурсов и абстрактные (основные) материалы. Вызывай перед выбором нормы. Полный поресурсный список запрашивай только при необходимости через full_resources=true.',
       parameters: {
         type: 'object',
         properties: {
           base_type: { type: 'string', enum: ['ГЭСН', 'ГЭСНм', 'ГЭСНмр', 'ГЭСНп', 'ГЭСНр'] },
           code: { type: 'string', description: 'Код нормы, напр. «15-01-038-01»' },
+          full_resources: { type: 'boolean', description: 'Вернуть полный поресурсный состав (по умолчанию — только сводка)' },
         },
         required: ['base_type', 'code'],
       },
@@ -61,8 +62,14 @@ export const TOOL_SCHEMAS = [
   },
 ];
 
-/** Состав нормы в компактном виде для модели (без служебных полей БД). */
-function normDetails(db, baseType, code) {
+/**
+ * Состав нормы для сверки моделью. По умолчанию — компактно: название,
+ * единица, состав работ (Content), НР/СП, СВОДКА ресурсов (число по типам) и
+ * список абстрактных материалов. Полный поресурсный список (десятки строк на
+ * норму) отдаётся только при full=true — он редко нужен для решения «подходит
+ * ли норма», а на каждом раунде пересылается обратно и раздувает вход.
+ */
+function normDetails(db, baseType, code, full = false) {
   const work = db.prepare('SELECT * FROM works WHERE base_type = ? AND code = ?').get(baseType, code);
   if (!work) return { error: `Норма ${baseType} ${code} не найдена` };
 
@@ -76,23 +83,31 @@ function normDetails(db, baseType, code) {
      WHERE wr.work_id = ? ORDER BY wr.id`
   ).all(work.id);
 
-  return {
+  const base = {
     base_type: work.base_type,
     code: work.code,
     name: work.name_full,
     measure_unit: work.measure_unit,
     collection: work.collection_name,
-    section_path: work.section_path,
     content: work.content_text,     // состав работ — главное для сверки
     nr_code: work.nr_code,
     sp_code: work.sp_code,
+  };
+
+  const abstracts = resources
+    .filter((r) => r.is_abstract)
+    .map((r) => ({ code: r.resource_code, name: r.end_name, unit: r.measure_unit }));
+  const counts = resources.reduce((acc, r) => { acc[r.resource_type] = (acc[r.resource_type] ?? 0) + 1; return acc; }, {});
+
+  if (!full) {
+    return { ...base, resource_summary: counts, main_materials: abstracts };
+  }
+  return {
+    ...base,
     resources: resources.map((r) => ({
-      code: r.resource_code,
-      type: r.resource_type,
-      name: r.ref_name ?? r.end_name,
+      code: r.resource_code, type: r.resource_type, name: r.ref_name ?? r.end_name,
       quantity: r.quantity_note === 'П' ? 'по проекту' : r.quantity,
-      unit: r.measure_unit,
-      abstract: Boolean(r.is_abstract),
+      unit: r.measure_unit, abstract: Boolean(r.is_abstract),
     })),
   };
 }
@@ -113,7 +128,7 @@ export function executeTool(db, name, args) {
       };
     }
     case 'get_norm_details':
-      return normDetails(db, args.base_type, args.code);
+      return normDetails(db, args.base_type, args.code, Boolean(args.full_resources));
     case 'search_materials': {
       const { materials } = searchMaterials(db, args.query ?? '', 15);
       return {

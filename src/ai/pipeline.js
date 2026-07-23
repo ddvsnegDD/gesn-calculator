@@ -14,6 +14,24 @@ const BATCH_SIZE = 6;          // позиций за вызов (ТЗ: 5-8)
 const MAX_TOOL_CALLS = 50;     // потолок tool-вызовов на батч (6 позиций × ~5 вызовов + запас)
 const BATCH_TIMEOUT_MS = 180_000;
 
+/**
+ * Секции, которые НЕ идут в пайплайн подбора норм ГЭСН (мера экономии).
+ * Материалы сопоставляются с ФСБЦ отдельно (сценарий Б), а не подбором норм;
+ * УСН/НДС/накладные — налоги и сборы, норм у них нет. Парсер уже знает секцию,
+ * поэтому классифицируем без вызова модели — это снимает с пайплайна ~половину
+ * позиций листа «Гранит» (12 материалов + 1 УСН из 27).
+ */
+const NON_WORK_SECTION = /материал|усн|ндс|налог|накладн|прочие расход|оборудован/i;
+
+/** Причина авто-отнесения секции к вне-подбора; null — секция идёт в пайплайн. */
+function autoOutOfScopeReason(sectionName) {
+  if (!sectionName) return null;
+  if (/материал|оборудован/i.test(sectionName)) return 'секция «Материалы» — сопоставляется с ФСБЦ отдельно, нормы ГЭСН не подбираются';
+  if (/усн|ндс|налог/i.test(sectionName)) return 'налоги и сборы (УСН/НДС) — норм ГЭСН нет';
+  if (/накладн|прочие расход/i.test(sectionName)) return 'накладные/прочие расходы — норм ГЭСН нет';
+  return null;
+}
+
 /** Пишет одну строку JSONL в лог прогона. */
 function makeLogger(runId) {
   fs.mkdirSync(RUNS_DIR, { recursive: true });
@@ -70,6 +88,30 @@ const addUsage = (acc, u) => {
   acc.total_tokens += u.total_tokens ?? 0;
 };
 
+/**
+ * Вызов модели с ретраями на транзиентных ошибках прокси. neuroapi временами
+ * отдаёт 500 «Что-то пошло не так, попробуйте позже» — одиночный сбой не
+ * должен ронять батч из 6 позиций. Ретраим 429 и 5xx с экспоненциальной
+ * задержкой; клиентские 4xx (кроме 429) пробрасываем сразу.
+ */
+async function createWithRetry(client, params, { retries = 4, baseDelay = 1500, log, batchIndex, round } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await client.chat.completions.create(params);
+    } catch (err) {
+      const status = err?.status ?? err?.response?.status;
+      const retryable = status === 429 || (status >= 500 && status < 600) || status === undefined;
+      lastErr = err;
+      if (!retryable || attempt === retries) throw err;
+      const delay = baseDelay * 2 ** attempt;
+      log?.write?.({ type: 'retry', batch: batchIndex, round, attempt: attempt + 1, status: status ?? 'network', delay_ms: delay, message: String(err.message).slice(0, 160) });
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
 /** Прогоняет один батч позиций через модель с tool use. */
 async function runBatch(client, db, log, { model, vedomostContext, batch, batchIndex }) {
   const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
@@ -100,12 +142,12 @@ async function runBatch(client, db, log, { model, vedomostContext, batch, batchI
     //   лимит достигнут — 'none': инструменты недоступны, только ответ;
     //   иначе — 'auto': даём завершить, когда данных набрано.
     const forceFinish = toolCallCount >= MAX_TOOL_CALLS;
-    const response = await client.chat.completions.create({
+    const response = await createWithRetry(client, {
       model,
       messages,
       tools: TOOL_SCHEMAS,
       tool_choice: forceFinish ? 'none' : round === 0 ? 'required' : 'auto',
-    });
+    }, { log, batchIndex, round });
     addUsage(usage, response.usage);
     const message = response.choices?.[0]?.message;
     log.write({ type: 'assistant', batch: batchIndex, round, content: message?.content ?? null, tool_calls: message?.tool_calls ?? null, forced_finish: forceFinish || undefined });
@@ -148,20 +190,33 @@ export async function runMatching(db, sheet, { model = aiConfig.model, batchSize
   const log = makeLogger(id);
   const client = await createClient();
 
-  const items = flattenItems(sheet);
+  const allItems = flattenItems(sheet);
   const vedomostContext = {
     sheet: sheet.sheet,
     sections: sheet.sections.map((s) => ({ name: s.name, positions: s.items.length })),
     totals: sheet.totals,
   };
 
-  // Стоимость меряем по балансу кабинета, а не по счётчикам токенов (ТЗ).
-  const balanceBefore = await snapshotBalance();
-  log.write({ type: 'run_start', run_id: id, model, sheet: sheet.sheet, items: items.length, balance_before: balanceBefore });
-
   const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   const byNo = new Map();
   let totalToolCalls = 0;
+
+  // Материалы, УСН и т.п. в пайплайн норм не отправляем — классифицируем сразу.
+  const items = [];
+  let skipped = 0;
+  for (const item of allItems) {
+    const reason = autoOutOfScopeReason(item.section);
+    if (reason) {
+      byNo.set(String(item.no), { item_no: item.no, status: 'out_of_scope', notes: reason });
+      skipped++;
+    } else {
+      items.push(item);
+    }
+  }
+
+  // Стоимость меряем по балансу кабинета, а не по счётчикам токенов (ТЗ).
+  const balanceBefore = await snapshotBalance();
+  log.write({ type: 'run_start', run_id: id, model, sheet: sheet.sheet, items: allItems.length, sent_to_model: items.length, skipped, balance_before: balanceBefore });
 
   for (let i = 0; i < items.length; i += batchSize) {
     const batch = items.slice(i, i + batchSize);
@@ -179,8 +234,9 @@ export async function runMatching(db, sheet, { model = aiConfig.model, batchSize
     }
   }
 
-  // сшиваем результат модели с исходными данными позиции, сохраняя порядок
-  const results = items.map((item) => {
+  // сшиваем результат с исходными данными позиции, сохраняя порядок ведомости;
+  // allItems включает и авто-классифицированные (материалы/УСН)
+  const results = allItems.map((item) => {
     const match = byNo.get(String(item.no)) ?? { item_no: item.no, status: 'error', notes: 'Позиция не вернулась из модели' };
     return { ...match, source: item };
   });
