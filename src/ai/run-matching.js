@@ -31,10 +31,14 @@ if (isMain(import.meta.url)) {
       const cand = r.candidates?.[0];
       const codeStr = cand ? `${cand.base_type} ${cand.code} (${cand.confidence})` : (r.included_in ? `→ ${r.included_in.item_no}` : '');
       const um = cand?.unit_mismatch ? ` [ед: ${cand.unit_mismatch.quote_unit}/${cand.unit_mismatch.norm_unit}]` : '';
+      const fb = r.model_fallback ? ` ⇄${r.model}` : '';   // позицию обработала запасная модель
       console.log(
         `${String(r.item_no).padEnd(5)} ${STATUS_MARK[r.status] ?? '?'} ${String(r.status).padEnd(12)} ` +
-        `${(r.source.name ?? '').slice(0, 42).padEnd(42)} ${codeStr}${um}`
+        `${(r.source.name ?? '').slice(0, 42).padEnd(42)} ${codeStr}${um}${fb}`
       );
+    }
+    if (run.modelsUsed && run.modelsUsed.length > 1) {
+      console.log(`\n⇄ переключение модели: часть позиций обработана запасной моделью (${run.modelsUsed.join(', ')})`);
     }
     console.log('\nСводка по статусам:');
     const counts = {};

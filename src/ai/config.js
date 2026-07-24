@@ -18,6 +18,12 @@ export const aiConfig = {
   apiKey: process.env.AI_API_KEY || null,
   baseURL: process.env.AI_BASE_URL || 'https://neuroapi.host/v1',
   model: process.env.AI_MODEL || 'claude-sonnet-4-5',
+  // Запасные модели на случай полного отказа основной у агрегатора
+  // (через запятую в AI_MODEL_FALLBACK). Наблюдался сплошной 500 по одной модели.
+  fallbackModels: (process.env.AI_MODEL_FALLBACK || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
 };
 
 export const aiEnabled = () => Boolean(aiConfig.apiKey);

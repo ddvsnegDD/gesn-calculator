@@ -113,7 +113,7 @@ async function createWithRetry(client, params, { retries = 4, baseDelay = 1500, 
 }
 
 /** Прогоняет один батч позиций через модель с tool use. */
-async function runBatch(client, db, log, { model, vedomostContext, batch, batchIndex }) {
+async function runBatch(client, db, log, { model, vedomostContext, batch, batchIndex, forceFullDetails = false }) {
   const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
@@ -164,6 +164,9 @@ async function runBatch(client, db, log, { model, vedomostContext, batch, batchI
       toolCallCount++;
       let args = {};
       try { args = JSON.parse(call.function.arguments || '{}'); } catch { /* пустые аргументы */ }
+      // Тест гипотезы «урезка get_norm_details вредит качеству»: форсируем
+      // полный состав независимо от того, запросила ли его модель.
+      if (forceFullDetails && call.function.name === 'get_norm_details') args.full_resources = true;
       const result = executeTool(db, call.function.name, args);
       log.write({ type: 'tool', batch: batchIndex, round, name: call.function.name, args, result_summary: summarize(result) });
       messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
@@ -185,7 +188,7 @@ function summarize(result) {
  * Позиции идут батчами; сбой батча не роняет прогон — его позиции получают
  * status "error" и помечаются в результате, остальные батчи продолжаются.
  */
-export async function runMatching(db, sheet, { model = aiConfig.model, batchSize = BATCH_SIZE, runId } = {}) {
+export async function runMatching(db, sheet, { model = aiConfig.model, fallbackModels = aiConfig.fallbackModels, batchSize = BATCH_SIZE, runId, forceFullDetails = false } = {}) {
   const id = runId || `${new Date().toISOString().replace(/[:.]/g, '-')}_${sheet.sheet}`;
   const log = makeLogger(id);
   const client = await createClient();
@@ -218,18 +221,39 @@ export async function runMatching(db, sheet, { model = aiConfig.model, batchSize
   const balanceBefore = await snapshotBalance();
   log.write({ type: 'run_start', run_id: id, model, sheet: sheet.sheet, items: allItems.length, sent_to_model: items.length, skipped, balance_before: balanceBefore });
 
+  // Цепочка моделей: основная, затем запасные (на случай полного отказа
+  // модели у агрегатора — наблюдался сплошной 500 по одной модели). Каждая
+  // позиция несёт модель, которая её реально обработала — переключение видно
+  // в результате и на экране подтверждения, а не только в логе.
+  const modelChain = [model, ...fallbackModels].filter((m, i, a) => m && a.indexOf(m) === i);
+  const usedModels = new Set();
+
   for (let i = 0; i < items.length; i += batchSize) {
     const batch = items.slice(i, i + batchSize);
     const batchIndex = Math.floor(i / batchSize);
-    try {
-      const res = await runBatch(client, db, log, { model, vedomostContext, batch, batchIndex });
-      addUsage(usage, res.usage);
-      totalToolCalls += res.toolCalls;
-      for (const item of res.items) byNo.set(String(item.item_no), sanitizeItem(item));
-    } catch (err) {
-      log.write({ type: 'batch_error', batch: batchIndex, error: err.message, items: batch.map((b) => b.no) });
-      for (const b of batch) {
-        byNo.set(String(b.no), { item_no: b.no, status: 'error', notes: `Сбой батча: ${err.message}` });
+    let done = false;
+    for (let m = 0; m < modelChain.length && !done; m++) {
+      const useModel = modelChain[m];
+      try {
+        const res = await runBatch(client, db, log, { model: useModel, vedomostContext, batch, batchIndex, forceFullDetails });
+        addUsage(usage, res.usage);
+        totalToolCalls += res.toolCalls;
+        usedModels.add(useModel);
+        const fellBack = m > 0;
+        if (fellBack) log.write({ type: 'model_fallback', batch: batchIndex, from: modelChain[0], to: useModel });
+        for (const item of res.items) {
+          byNo.set(String(item.item_no), { ...sanitizeItem(item), model: useModel, model_fallback: fellBack || undefined });
+        }
+        done = true;
+      } catch (err) {
+        log.write({ type: 'batch_error', batch: batchIndex, model: useModel, error: err.message, items: batch.map((b) => b.no) });
+        const isLast = m === modelChain.length - 1;
+        if (isLast) {
+          for (const b of batch) {
+            byNo.set(String(b.no), { item_no: b.no, status: 'error', model: useModel, notes: `Сбой батча на всех моделях цепочки: ${err.message}` });
+          }
+        }
+        // иначе — пробуем следующую модель в цепочке
       }
     }
   }
@@ -248,15 +272,15 @@ export async function runMatching(db, sheet, { model = aiConfig.model, batchSize
   log.write({
     type: 'run_end', usage, tool_calls: totalToolCalls,
     matched: results.filter((r) => r.status === 'matched').length,
-    balance_after: balanceAfter, cost,
+    models_used: [...usedModels], balance_after: balanceAfter, cost,
   });
   await log.close();
 
   // надёжный дамп результата рядом с логом — для сверки прогонов между собой
   const resultFile = log.file.replace(/\.jsonl$/, '.result.json');
-  fs.writeFileSync(resultFile, JSON.stringify({ runId: id, model, sheet: sheet.sheet, cost, results }, null, 2));
+  fs.writeFileSync(resultFile, JSON.stringify({ runId: id, model, models_used: [...usedModels], sheet: sheet.sheet, cost, results }, null, 2));
 
-  return { runId: id, logFile: log.file, resultFile, sheet: sheet.sheet, model, results, usage, toolCalls: totalToolCalls, cost };
+  return { runId: id, logFile: log.file, resultFile, sheet: sheet.sheet, model, modelsUsed: [...usedModels], results, usage, toolCalls: totalToolCalls, cost };
 }
 
 /** Удобная обёртка: разобрать xlsx и прогнать выбранный лист. */
