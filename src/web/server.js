@@ -10,6 +10,10 @@ import { calcPosition } from '../engine/calc-position.js';
 import { importSplitForm } from '../import/import-split-form.js';
 import { searchWorks } from '../search/query.js';
 import { searchMaterials } from '../search/materials.js';
+import { calcEstimate } from '../engine/estimate.js';
+import { parseVedomost } from '../ai/parse-vedomost.js';
+import { runMatching } from '../ai/pipeline.js';
+import { aiEnabled, aiDisabledReason, aiConfig } from '../ai/config.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -151,6 +155,62 @@ export function createApp(db) {
     res.send(Buffer.from(buffer));
   }));
 
+  // === AI-слой (Этап 5) ====================================================
+
+  app.get('/api/ai/status', wrap(async (req, res) => {
+    res.json({
+      enabled: aiEnabled(),
+      reason: aiDisabledReason(),
+      model: aiConfig.model,
+      fallback: aiConfig.fallbackModels,
+    });
+  }));
+
+  // Загрузка и разбор ведомости подрядчика (без AI) — возвращает структуру
+  app.post('/api/vedomost', upload.single('file'), wrap(async (req, res) => {
+    if (!req.file) throw new Error('Файл ведомости не передан');
+    try {
+      const parsed = await parseVedomost(req.file.path);
+      res.json(parsed);
+    } finally {
+      fs.unlink(req.file.path, () => {});
+    }
+  }));
+
+  // AI-подбор норм к листу ведомости. Тело: { sheet } (объект из /api/vedomost)
+  app.post('/api/ai/match', wrap(async (req, res) => {
+    if (!aiEnabled()) throw new Error(aiDisabledReason());
+    const { sheet } = req.body ?? {};
+    if (!sheet || !Array.isArray(sheet.sections)) throw new Error('Не передан лист ведомости (sheet)');
+    const run = await runMatching(db, sheet);
+    res.json({
+      runId: run.runId,
+      model: run.model,
+      modelsUsed: run.modelsUsed,
+      cost: run.cost,
+      results: run.results,
+    });
+  }));
+
+  // Многопозиционный расчёт свода. Тело: { positions: [calcPosition-вход...] }
+  app.post('/api/estimate', wrap(async (req, res) => {
+    const { positions } = req.body ?? {};
+    if (!Array.isArray(positions) || !positions.length) throw new Error('Пустой список позиций');
+    res.json(calcEstimate(db, positions));
+  }));
+
+  // Экспорт свода в xlsx
+  app.post('/api/estimate/export', wrap(async (req, res) => {
+    const { positions } = req.body ?? {};
+    if (!Array.isArray(positions) || !positions.length) throw new Error('Пустой список позиций');
+    const estimate = calcEstimate(db, positions);
+    const buffer = await buildEstimateWorkbook(estimate);
+    const name = `Смета_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
+    res.send(Buffer.from(buffer));
+  }));
+
   return app;
 }
 
@@ -248,6 +308,55 @@ async function buildWorkbook(result) {
   ws.addRow(['СП', `${result.norms.sp_code ?? '—'}${result.norms.sp_item_no ? ` (п. ${result.norms.sp_item_no})` : ''}`]);
   if (result.flags.length) ws.addRow(['Флаги', result.flags.join(', ')]);
 
+  return wb.xlsx.writeBuffer();
+}
+
+/** Свод многопозиционной сметы в xlsx: лист-свод + постатейная разбивка. */
+async function buildEstimateWorkbook(estimate) {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Смета');
+  const bold = { bold: true };
+  ws.columns = [
+    { width: 8 }, { width: 16 }, { width: 46 }, { width: 9 }, { width: 10 },
+    { width: 14 }, { width: 14 }, { width: 14 }, { width: 14 }, { width: 14 },
+  ];
+
+  ws.addRow(['Смета (черновик по подбору ассистента)']).font = bold;
+  ws.addRow(['Позиций:', estimate.position_count]);
+  ws.addRow([]);
+
+  const head = ws.addRow(['№ КП', 'Код ГЭСН', 'Наименование', 'Ед.', 'Кол-во',
+    'ПЗ, руб', 'ФОТ, руб', 'НР, руб', 'СП, руб', 'Всего, руб']);
+  head.font = bold;
+
+  for (const l of estimate.lines) {
+    ws.addRow([
+      l.item_no ?? '', `${l.base_type}${l.code}`, l.name, l.measure_unit, l.quantity,
+      l.totals.direct_costs, l.totals.fot, l.totals.overhead, l.totals.profit, l.totals.total,
+    ]);
+  }
+
+  ws.addRow([]);
+  const t = estimate.totals;
+  const totalRow = ws.addRow(['', '', 'ИТОГО ПО СМЕТЕ', '', '',
+    t.direct_costs, t.fot, t.overhead, t.profit, t.total]);
+  totalRow.font = bold;
+  ws.addRow(['', '', 'в том числе НДС', '', '', '', '', '', '', t.vat]);
+
+  if (estimate.market) {
+    ws.addRow([]);
+    ws.addRow(['СРАВНЕНИЕ С КП ПОДРЯДЧИКА']).font = bold;
+    ws.addRow(['', '', 'Норматив (сопоставленные позиции)', '', '', '', '', '', '', estimate.market.normative_total]);
+    ws.addRow(['', '', 'КП подрядчика', '', '', '', '', '', '', estimate.market.market_total]);
+    ws.addRow(['', '', 'Разница, руб', '', '', '', '', '', '', estimate.market.delta_rub]);
+    ws.addRow(['', '', 'Разница, %', '', '', '', '', '', '', estimate.market.delta_pct]);
+  }
+
+  if (estimate.errors.length) {
+    ws.addRow([]);
+    ws.addRow(['НЕ ПОСЧИТАНЫ']).font = bold;
+    for (const e of estimate.errors) ws.addRow(['', e.code ?? '', e.error]);
+  }
   return wb.xlsx.writeBuffer();
 }
 
