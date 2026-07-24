@@ -48,7 +48,12 @@ if (isMain(import.meta.url)) {
     } else {
       console.log('  не удалось получить баланс кабинета (эндпоинт биллинга недоступен)');
     }
-    console.log(`Токены (справочно, счётчик прокси недостоверен): prompt ${run.usage.prompt_tokens}, completion ${run.usage.completion_tokens}, всего ${run.usage.total_tokens}`);
+    const u = run.usage;
+    const inShare = u.total_tokens ? ((u.prompt_tokens / u.total_tokens) * 100).toFixed(1) : '—';
+    console.log(`Токены (справочно, счётчик прокси недостоверен):`);
+    console.log(`  prompt (вход) ${u.prompt_tokens.toLocaleString('ru-RU')} — ${inShare}% от всего`);
+    console.log(`  completion (выход) ${u.completion_tokens.toLocaleString('ru-RU')}`);
+    console.log(`  всего ${u.total_tokens.toLocaleString('ru-RU')}`);
     console.log(`Tool-вызовов: ${run.toolCalls}`);
   } catch (err) {
     console.error(`\n❌ ${err.message}`);
