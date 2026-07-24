@@ -25,6 +25,7 @@ export const FLAGS = {
   PRICE_MISSING: 'цена_не_найдена',
   UNIT_MISMATCH: 'единицы_измерения_не_совпадают',
   POSITION_UNIT_MISMATCH: 'единицы_позиции_не_совпадают',
+  UNIT_AUTO_CONVERTED: 'объём_пересчитан_по_кратности',
 };
 
 /** Округление до 6 знаков — снимает артефакты двоичной арифметики. */
@@ -112,7 +113,7 @@ export function calcPosition(db, input) {
     options = {},
   } = input;
 
-  const volume = Number(quantity);
+  let volume = Number(quantity);
   if (!Number.isFinite(volume)) throw new Error(`Некорректный объём: ${quantity}`);
   const kNorm = options.norm_coefficient === undefined || options.norm_coefficient === null
     ? 1
@@ -131,12 +132,22 @@ export function calcPosition(db, input) {
 
   // --- детерминированная сверка единицы позиции (задача 1 доработок) --------
   // Единицу из КП сверяем с единицей нормы В КОДЕ, не полагаясь на модель.
-  // При расхождении (в т.ч. кратности «м²»/«100 м²») ставим флаг: объём должен
-  // быть введён в единицах нормы, иначе позиция завышена/занижена в N раз.
+  // Два случая расхождения:
+  //   multiplier («м²»/«100 м²») — пересчёт однозначен: объём ÷ ratio, авто
+  //     с флагом (UI показывает пересчёт и требует подтверждения);
+  //   base («шт»/«отверстий») — нужна геометрия от человека: блокируем флагом,
+  //     считать по объёму КП нельзя.
   let unitCheck = null;
   if (quote_unit && !quantity_in_norm_units) {
     unitCheck = compareUnits(quote_unit, work.measure_unit);
-    if (unitCheck.match === false) flags.add(FLAGS.POSITION_UNIT_MISMATCH);
+    if (unitCheck.kind === 'multiplier') {
+      const original = volume;
+      volume = r6(volume / unitCheck.ratio);
+      unitCheck = { ...unitCheck, auto_converted: true, original_quantity: original, converted_quantity: volume };
+      flags.add(FLAGS.UNIT_AUTO_CONVERTED);
+    } else if (unitCheck.kind === 'base') {
+      flags.add(FLAGS.POSITION_UNIT_MISMATCH);
+    }
   }
   const lines = [];
   let fotWorkers = 0;

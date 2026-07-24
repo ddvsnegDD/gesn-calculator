@@ -40,26 +40,40 @@ const UNIT_MISMATCH_POSITIONS = [
   { item_no: '1.11', base_type: 'ГЭСН', code: '15-04-045-01', qty: 91 },
 ];
 
-test('calcPosition ставит флаг единиц при КП «м2» на норму «100 м2»', () => {
+test('calcPosition авто-пересчитывает объём при кратности «м2»/«100 м2»', () => {
   for (const p of UNIT_MISMATCH_POSITIONS) {
     const r = calcPosition(db, {
       base_type: p.base_type, work_code: p.code, quantity: p.qty, period_id: PERIOD, quote_unit: 'м2',
     });
     assert.equal(r.work.measure_unit, '100 м2', `${p.item_no}: норма в 100 м2`);
-    assert.ok(r.flags.includes('единицы_позиции_не_совпадают'), `${p.item_no}: флаг`);
-    assert.equal(r.unit_check.match, false);
-    assert.equal(r.unit_check.ratio, 100);
+    // множитель отличается → авто-пересчёт (÷100), а не блок
+    assert.equal(r.unit_check.kind, 'multiplier');
+    assert.equal(r.unit_check.auto_converted, true);
+    assert.equal(r.unit_check.converted_quantity, Math.round((p.qty / 100) * 1e6) / 1e6);
+    assert.ok(r.flags.includes('объём_пересчитан_по_кратности'));
+    assert.equal(r.input.quantity, r.unit_check.converted_quantity, `${p.item_no}: считает по пересчитанному объёму`);
   }
 });
 
-test('свод блокирует все 4 позиции с неверными объёмами КП, ничего не считает молча', () => {
+test('свод: кратность авто-пересчитана (не завышена в 100 раз), помечена для подтверждения', () => {
   const est = calcEstimate(db, UNIT_MISMATCH_POSITIONS.map((p) => ({
     base_type: p.base_type, work_code: p.code, quantity: p.qty, period_id: PERIOD,
     item_no: p.item_no, quote_unit: 'м2', market_total: 100000,
   })));
-  assert.equal(est.position_count, 0, 'ничего не посчитано');
-  assert.equal(est.blocked.length, 4, 'все 4 заблокированы');
-  for (const b of est.blocked) assert.match(b.reason, /кратность/);
+  assert.equal(est.position_count, 4, 'все 4 посчитаны (по пересчитанному объёму)');
+  assert.equal(est.blocked.length, 0, 'кратность не блокируется');
+  assert.equal(est.auto_converted.length, 4, 'все 4 вынесены на подтверждение');
+  for (const a of est.auto_converted) assert.equal(a.ratio, 100);
+});
+
+test('разные базовые единицы (шт/отверстий) — блокировка, не авто-пересчёт', () => {
+  const est = calcEstimate(db, [{
+    base_type: 'ГЭСН', work_code: '46-03-013-45', quantity: 25, period_id: PERIOD,
+    item_no: '1.12', quote_unit: 'шт', market_total: 46250,
+  }]);
+  assert.equal(est.position_count, 0);
+  assert.equal(est.blocked.length, 1);
+  assert.match(est.blocked[0].reason, /разные единицы/);
 });
 
 test('с объёмом в единицах нормы (0.91) позиция считается', () => {

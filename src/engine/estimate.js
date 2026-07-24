@@ -24,27 +24,39 @@ export function calcEstimate(db, positions) {
     market_total: 0,
   };
   const errors = [];
-  const blocked = [];   // позиции с несовпадением единиц — не считаем молча (задача 1)
+  const blocked = [];     // разные базовые единицы — нужна геометрия, не считаем
+  const autoConverted = []; // пересчитано по кратности — считаем, но выносим на подтверждение
   let hasMarket = false;
 
   for (const pos of positions) {
     try {
       const result = calcPosition(db, pos);
       const t = result.totals;
+      const uc = result.unit_check;
 
-      // Детерминированная блокировка: если единица КП не совпала с единицей
-      // нормы и объём не подтверждён в единицах нормы — не даём молчаливый
-      // (завышенный/заниженный) результат, отправляем на уточнение.
-      if (result.unit_check && result.unit_check.match === false) {
+      // Блокируем только когда базовые единицы разные (шт/отверстий, м.п./м²) —
+      // пересчёт требует геометрии от человека. Кратность (м²/100 м²) движок
+      // пересчитал сам, такую позицию считаем, но помечаем для подтверждения.
+      if (uc && uc.kind === 'base') {
         blocked.push({
           item_no: pos.item_no ?? null,
           code: `${result.work.base_type}${result.work.code}`,
-          quote_unit: result.unit_check.baseQuote ?? pos.quote_unit,
+          quote_unit: uc.baseQuote ?? pos.quote_unit,
           norm_unit: result.work.measure_unit,
-          ratio: result.unit_check.ratio,
-          reason: result.unit_check.reason,
+          reason: uc.reason,
         });
         continue;
+      }
+      if (uc && uc.auto_converted) {
+        autoConverted.push({
+          item_no: pos.item_no ?? null,
+          code: `${result.work.base_type}${result.work.code}`,
+          quote_unit: pos.quote_unit,
+          norm_unit: result.work.measure_unit,
+          ratio: uc.ratio,
+          from: uc.original_quantity,
+          to: uc.converted_quantity,
+        });
       }
 
       // Предохранитель: норматив расходится с ценой КП больше чем на порядок —
@@ -93,5 +105,5 @@ export function calcEstimate(db, positions) {
       }
     : null;
 
-  return { lines, totals, market, errors, blocked, position_count: lines.length };
+  return { lines, totals, market, errors, blocked, auto_converted: autoConverted, position_count: lines.length };
 }

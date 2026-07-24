@@ -304,24 +304,35 @@ function renderPosition(r, i) {
   const options = (r.candidates ?? []).map((c, j) =>
     `<option value="${j}"${j === r.chosenIndex ? ' selected' : ''}>${esc(c.base_type)} ${esc(c.code)} — ${esc(c.confidence)}</option>`).join('');
 
-  // Детерминированная сверка единиц (с сервера, не мнение модели). При
-  // несовпадении — обязательный ввод объёма в единицах нормы (задача 1).
+  // Детерминированная сверка единиц (с сервера, не мнение модели).
+  //   multiplier — пересчёт однозначен: показываем и требуем подтверждения;
+  //   base       — разные единицы: обязательный ввод объёма в единицах нормы.
   const uc = cand ? cand.unit_check : null;
   const needsInfo = cand && cand.unit_mismatch ? cand.unit_mismatch.needs : 'пересчёт по геометрии';
-  const um = uc && uc.match === false ? `
-    <div class="um-box" data-um="${i}">
-      ⚠ Единицы не совпадают: КП «${esc(src.unit ?? '')}» (${num(src.qty)}) ↔ норма «${esc(cand.measure_unit ?? '')}».
-      ${uc.ratio ? `Норма крупнее в ${uc.ratio} раз.` : 'Разные единицы.'}
+  let um = '';
+  if (uc && uc.kind === 'multiplier') {
+    const converted = Number((Number(src.qty) / uc.ratio).toFixed(6));
+    um = `<div class="um-box" data-um="${i}">
+      Единицы отличаются кратностью: КП «${esc(src.unit ?? '')}» (${num(src.qty)}) ↔ норма «${esc(cand.measure_unit ?? '')}».
+      Пересчитано автоматически: <b>${num(src.qty)} ÷ ${uc.ratio} = ${num(converted)}</b> ${esc(cand.measure_unit ?? '')}.
+      <label style="display:flex; gap:8px; align-items:center; margin-top:6px; font-size:13px; color:var(--ink)">
+        <input type="checkbox" data-confirm="${i}" ${r.unitConfirmed ? 'checked' : ''} style="width:auto"> подтверждаю пересчёт объёма
+      </label>
+      <div class="muted" style="margin-top:4px">Без подтверждения позиция в смету не пойдёт.</div>
+    </div>`;
+  } else if (uc && uc.kind === 'base') {
+    um = `<div class="um-box" data-um="${i}">
+      ⚠ Разные единицы: КП «${esc(src.unit ?? '')}» (${num(src.qty)}) ↔ норма «${esc(cand.measure_unit ?? '')}» — автопересчёт невозможен.
       <div class="row" style="margin-top:6px">
         <div style="flex:0 0 260px">
           <label>Объём в единицах нормы «${esc(cand.measure_unit ?? '')}»</label>
-          <input type="number" step="any" min="0" data-dim="${i}" value="${esc(r.dimension)}"
-            placeholder="${uc.ratio ? `напр. ${num(Number((Number(src.qty) / uc.ratio).toFixed(6)))}` : 'пересчитайте вручную'}">
+          <input type="number" step="any" min="0" data-dim="${i}" value="${esc(r.dimension)}" placeholder="пересчитайте вручную">
         </div>
       </div>
-      <div class="muted" style="margin-top:4px">Система не пересчитывает единицы (${esc(needsInfo)}).
+      <div class="muted" style="margin-top:4px">Система не пересчитывает разные единицы (${esc(needsInfo)}).
         Без этого объёма позиция в смету не пойдёт.</div>
-    </div>` : '';
+    </div>`;
+  }
 
   return `<div class="posrow${r.excluded ? ' excluded' : ''}" data-pos="${i}">
     <div class="head">
@@ -350,6 +361,9 @@ function bindConfirmHandlers() {
   }
   for (const inp of $('confirmBody').querySelectorAll('[data-dim]')) {
     inp.oninput = () => { ai.results[Number(inp.dataset.dim)].dimension = inp.value; };
+  }
+  for (const cb of $('confirmBody').querySelectorAll('[data-confirm]')) {
+    cb.onchange = () => { ai.results[Number(cb.dataset.confirm)].unitConfirmed = cb.checked; };
   }
   for (const btn of $('confirmBody').querySelectorAll('[data-toggle]')) {
     btn.onclick = () => {
@@ -396,27 +410,38 @@ $('btnBuildEstimate').onclick = async () => {
     if (r.excluded || r.chosenIndex < 0) continue;
     const cand = r.candidates[r.chosenIndex];
     const src = r.source ?? {};
-    const mismatch = cand.unit_check && cand.unit_check.match === false;
-    // при несовпадении единиц без объёма в единицах нормы позицию не считаем (задача 1)
-    if (mismatch && !r.dimension) { skipped.push(src.no ?? r.item_no); continue; }
-    // объём: при несовпадении единиц — введённый в единицах нормы, иначе — из КП
-    const quantity = mismatch ? Number(r.dimension) : (Number(src.qty) || 0);
-    positions.push({
-      base_type: cand.base_type,
-      work_code: cand.code,
-      quantity,
-      period_id: state.periodId,
-      territory_type: 'Территория',
-      item_no: src.no ?? r.item_no,
-      name: src.name,
-      market_total: src.total ?? null,
-      quote_unit: src.unit,                      // для детерминированной сверки на сервере
-      quantity_in_norm_units: mismatch || undefined, // при вводе — объём уже в единицах нормы
-      options: {},
-    });
+    const uc = cand.unit_check;
+    const kind = uc ? uc.kind : 'match';
+
+    if (kind === 'multiplier') {
+      // пересчёт однозначен, но требует подтверждения сметчика
+      if (!r.unitConfirmed) { skipped.push((src.no ?? r.item_no) + ' (не подтверждён пересчёт)'); continue; }
+      positions.push({
+        base_type: cand.base_type, work_code: cand.code, quantity: Number(src.qty) || 0,
+        period_id: state.periodId, territory_type: 'Территория',
+        item_no: src.no ?? r.item_no, name: src.name, market_total: src.total ?? null,
+        quote_unit: src.unit, options: {},  // сервер сам пересчитает по кратности
+      });
+    } else if (kind === 'base') {
+      // разные единицы — объём вводит сметчик в единицах нормы
+      if (!r.dimension) { skipped.push((src.no ?? r.item_no) + ' (нет объёма в единицах нормы)'); continue; }
+      positions.push({
+        base_type: cand.base_type, work_code: cand.code, quantity: Number(r.dimension),
+        period_id: state.periodId, territory_type: 'Территория',
+        item_no: src.no ?? r.item_no, name: src.name, market_total: src.total ?? null,
+        quote_unit: src.unit, quantity_in_norm_units: true, options: {},
+      });
+    } else {
+      positions.push({
+        base_type: cand.base_type, work_code: cand.code, quantity: Number(src.qty) || 0,
+        period_id: state.periodId, territory_type: 'Территория',
+        item_no: src.no ?? r.item_no, name: src.name, market_total: src.total ?? null,
+        quote_unit: src.unit, options: {},
+      });
+    }
   }
-  if (!positions.length) return alert('Нет позиций к расчёту (проверьте выбор и объёмы в единицах нормы).');
-  if (skipped.length && !confirm(`Позиции ${skipped.join(', ')} пропущены — не задан объём в единицах нормы (единицы КП и нормы различаются). Продолжить без них?`)) return;
+  if (!positions.length) return alert('Нет позиций к расчёту (подтвердите пересчёт или задайте объёмы в единицах нормы).');
+  if (skipped.length && !confirm(`Пропущены: ${skipped.join(', ')}. Продолжить без них?`)) return;
 
   try {
     const estimate = await api('/api/estimate', {
@@ -462,9 +487,10 @@ function renderEstimate(est) {
         <td class="num">${money(t.profit)}</td><td class="num">${money(t.total)}</td></tr>
     </table>
     <div class="muted" style="margin-top:6px">в том числе НДС: ${money(t.vat)} · ФОТ: ${money(t.fot)}</div>
+    ${est.auto_converted && est.auto_converted.length ? `<div class="um-box" style="margin-top:10px">Объём пересчитан по кратности (подтверждено): ${est.auto_converted.map((a) => `${esc(a.item_no ?? '')} ${a.from}→${a.to} «${esc(a.norm_unit)}»`).join('; ')}</div>` : ''}
     ${(est.lines.some((l) => l.magnitude_warning)) ? `<div class="um-box" style="margin-top:10px">⚠ ${est.lines.filter((l) => l.magnitude_warning).map((l) => `${esc(l.item_no ?? '')}: ${esc(l.magnitude_warning)}`).join('; ')}</div>` : ''}
     ${market}
-    ${est.blocked && est.blocked.length ? `<div class="um-box" style="margin-top:10px">⚠ <b>Заблокированы по единицам</b> (не вошли в смету, вернитесь и введите объём в единицах нормы): ${est.blocked.map((b) => `${esc(b.item_no ?? '')} ${esc(b.code)} — ${esc(b.reason)}`).join('; ')}</div>` : ''}
+    ${est.blocked && est.blocked.length ? `<div class="um-box" style="margin-top:10px">⚠ <b>Заблокированы по единицам</b> (разные базовые единицы, вернитесь и введите объём в единицах нормы): ${est.blocked.map((b) => `${esc(b.item_no ?? '')} ${esc(b.code)} — ${esc(b.reason)}`).join('; ')}</div>` : ''}
     ${est.errors.length ? `<p class="err" style="margin-top:10px">Не посчитаны: ${est.errors.map((e) => esc((e.item_no ?? '') + ' ' + (e.code ?? '') + ': ' + e.error)).join('; ')}</p>` : ''}
     <div style="margin-top:16px"><button id="btnEstExport">Экспорт сметы в Excel</button></div>`;
 

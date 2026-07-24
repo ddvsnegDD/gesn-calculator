@@ -67,12 +67,24 @@ export function compareUnits(quoteUnit, normUnit) {
   const sameFactor = q.factor === n.factor;
   const match = sameBase && sameFactor;
 
+  // kind различает два случая расхождения:
+  //   'multiplier' — база та же, отличается только множитель («м²»/«100 м²»):
+  //                  пересчёт однозначен (÷ratio), можно авто с подтверждением;
+  //   'base'       — разные базовые единицы («шт»/«отверстий», «м.п.»/«м²»):
+  //                  нужна геометрия от человека, авто нельзя — блокировка.
+  let kind = 'match';
   let reason = null;
-  if (!sameBase) reason = `разные единицы: «${q.base}» ≠ «${n.base}»`;
-  else if (!sameFactor) reason = `кратность: «${quoteUnit}» ↔ «${normUnit}» (в ${n.factor / q.factor} раз)`;
+  if (!sameBase) {
+    kind = 'base';
+    reason = `разные единицы: «${q.base}» ≠ «${n.base}»`;
+  } else if (!sameFactor) {
+    kind = 'multiplier';
+    reason = `кратность: «${quoteUnit}» ↔ «${normUnit}» (в ${n.factor / q.factor} раз)`;
+  }
 
   return {
     match,
+    kind,
     factorQuote: q.factor,
     factorNorm: n.factor,
     baseQuote: q.base,
