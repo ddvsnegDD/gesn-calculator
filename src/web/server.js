@@ -11,6 +11,7 @@ import { importSplitForm } from '../import/import-split-form.js';
 import { searchWorks } from '../search/query.js';
 import { searchMaterials } from '../search/materials.js';
 import { calcEstimate } from '../engine/estimate.js';
+import { compareUnits } from '../engine/units.js';
 import { parseVedomost } from '../ai/parse-vedomost.js';
 import { runMatching } from '../ai/pipeline.js';
 import { aiEnabled, aiDisabledReason, aiConfig } from '../ai/config.js';
@@ -183,6 +184,16 @@ export function createApp(db) {
     const { sheet } = req.body ?? {};
     if (!sheet || !Array.isArray(sheet.sections)) throw new Error('Не передан лист ведомости (sheet)');
     const run = await runMatching(db, sheet);
+    // Обогащаем кандидатов единицей нормы и ДЕТЕРМИНИРОВАННОЙ сверкой единиц
+    // (не полагаясь на unit_mismatch от модели — задача 1 доработок).
+    const unitOf = db.prepare('SELECT measure_unit FROM works WHERE base_type = ? AND code = ?').pluck();
+    for (const r of run.results) {
+      const quoteUnit = r.source?.unit;
+      for (const c of r.candidates ?? []) {
+        c.measure_unit = unitOf.get(c.base_type, c.code) ?? null;
+        c.unit_check = quoteUnit && c.measure_unit ? compareUnits(quoteUnit, c.measure_unit) : null;
+      }
+    }
     res.json({
       runId: run.runId,
       model: run.model,

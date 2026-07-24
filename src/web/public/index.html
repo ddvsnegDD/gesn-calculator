@@ -304,17 +304,22 @@ function renderPosition(r, i) {
   const options = (r.candidates ?? []).map((c, j) =>
     `<option value="${j}"${j === r.chosenIndex ? ' selected' : ''}>${esc(c.base_type)} ${esc(c.code)} — ${esc(c.confidence)}</option>`).join('');
 
-  const um = cand && cand.unit_mismatch ? `
+  // Детерминированная сверка единиц (с сервера, не мнение модели). При
+  // несовпадении — обязательный ввод объёма в единицах нормы (задача 1).
+  const uc = cand ? cand.unit_check : null;
+  const needsInfo = cand && cand.unit_mismatch ? cand.unit_mismatch.needs : 'пересчёт по геометрии';
+  const um = uc && uc.match === false ? `
     <div class="um-box" data-um="${i}">
-      Единицы не совпадают: КП «${esc(cand.unit_mismatch.quote_unit)}» (${num(src.qty)}) ↔ норма «${esc(cand.unit_mismatch.norm_unit)}».
-      Нужно: ${esc(cand.unit_mismatch.needs)}.
+      ⚠ Единицы не совпадают: КП «${esc(src.unit ?? '')}» (${num(src.qty)}) ↔ норма «${esc(cand.measure_unit ?? '')}».
+      ${uc.ratio ? `Норма крупнее в ${uc.ratio} раз.` : 'Разные единицы.'}
       <div class="row" style="margin-top:6px">
         <div style="flex:0 0 260px">
-          <label>Объём в единицах нормы «${esc(cand.unit_mismatch.norm_unit)}»</label>
-          <input type="number" step="any" min="0" data-dim="${i}" value="${esc(r.dimension)}" placeholder="пересчитайте вручную">
+          <label>Объём в единицах нормы «${esc(cand.measure_unit ?? '')}»</label>
+          <input type="number" step="any" min="0" data-dim="${i}" value="${esc(r.dimension)}"
+            placeholder="${uc.ratio ? `напр. ${num(Number((Number(src.qty) / uc.ratio).toFixed(6)))}` : 'пересчитайте вручную'}">
         </div>
       </div>
-      <div class="muted" style="margin-top:4px">Система не пересчитывает единицы: геометрию (${esc(cand.unit_mismatch.needs)}) знаете вы.
+      <div class="muted" style="margin-top:4px">Система не пересчитывает единицы (${esc(needsInfo)}).
         Без этого объёма позиция в смету не пойдёт.</div>
     </div>` : '';
 
@@ -391,10 +396,11 @@ $('btnBuildEstimate').onclick = async () => {
     if (r.excluded || r.chosenIndex < 0) continue;
     const cand = r.candidates[r.chosenIndex];
     const src = r.source ?? {};
-    // при несовпадении единиц без объёма в единицах нормы позицию не считаем (раздел 5 ТЗ)
-    if (cand.unit_mismatch && !r.dimension) { skipped.push(src.no ?? r.item_no); continue; }
+    const mismatch = cand.unit_check && cand.unit_check.match === false;
+    // при несовпадении единиц без объёма в единицах нормы позицию не считаем (задача 1)
+    if (mismatch && !r.dimension) { skipped.push(src.no ?? r.item_no); continue; }
     // объём: при несовпадении единиц — введённый в единицах нормы, иначе — из КП
-    const quantity = cand.unit_mismatch ? Number(r.dimension) : (Number(src.qty) || 0);
+    const quantity = mismatch ? Number(r.dimension) : (Number(src.qty) || 0);
     positions.push({
       base_type: cand.base_type,
       work_code: cand.code,
@@ -404,11 +410,13 @@ $('btnBuildEstimate').onclick = async () => {
       item_no: src.no ?? r.item_no,
       name: src.name,
       market_total: src.total ?? null,
+      quote_unit: src.unit,                      // для детерминированной сверки на сервере
+      quantity_in_norm_units: mismatch || undefined, // при вводе — объём уже в единицах нормы
       options: {},
     });
   }
-  if (!positions.length) return alert('Нет позиций к расчёту (проверьте выбор и размеры для пересчёта единиц).');
-  if (skipped.length && !confirm(`Позиции ${skipped.join(', ')} пропущены — не задан размер для пересчёта единиц. Продолжить без них?`)) return;
+  if (!positions.length) return alert('Нет позиций к расчёту (проверьте выбор и объёмы в единицах нормы).');
+  if (skipped.length && !confirm(`Позиции ${skipped.join(', ')} пропущены — не задан объём в единицах нормы (единицы КП и нормы различаются). Продолжить без них?`)) return;
 
   try {
     const estimate = await api('/api/estimate', {
@@ -454,7 +462,9 @@ function renderEstimate(est) {
         <td class="num">${money(t.profit)}</td><td class="num">${money(t.total)}</td></tr>
     </table>
     <div class="muted" style="margin-top:6px">в том числе НДС: ${money(t.vat)} · ФОТ: ${money(t.fot)}</div>
+    ${(est.lines.some((l) => l.magnitude_warning)) ? `<div class="um-box" style="margin-top:10px">⚠ ${est.lines.filter((l) => l.magnitude_warning).map((l) => `${esc(l.item_no ?? '')}: ${esc(l.magnitude_warning)}`).join('; ')}</div>` : ''}
     ${market}
+    ${est.blocked && est.blocked.length ? `<div class="um-box" style="margin-top:10px">⚠ <b>Заблокированы по единицам</b> (не вошли в смету, вернитесь и введите объём в единицах нормы): ${est.blocked.map((b) => `${esc(b.item_no ?? '')} ${esc(b.code)} — ${esc(b.reason)}`).join('; ')}</div>` : ''}
     ${est.errors.length ? `<p class="err" style="margin-top:10px">Не посчитаны: ${est.errors.map((e) => esc((e.item_no ?? '') + ' ' + (e.code ?? '') + ': ' + e.error)).join('; ')}</p>` : ''}
     <div style="margin-top:16px"><button id="btnEstExport">Экспорт сметы в Excel</button></div>`;
 

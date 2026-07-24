@@ -24,12 +24,39 @@ export function calcEstimate(db, positions) {
     market_total: 0,
   };
   const errors = [];
+  const blocked = [];   // позиции с несовпадением единиц — не считаем молча (задача 1)
   let hasMarket = false;
 
   for (const pos of positions) {
     try {
       const result = calcPosition(db, pos);
       const t = result.totals;
+
+      // Детерминированная блокировка: если единица КП не совпала с единицей
+      // нормы и объём не подтверждён в единицах нормы — не даём молчаливый
+      // (завышенный/заниженный) результат, отправляем на уточнение.
+      if (result.unit_check && result.unit_check.match === false) {
+        blocked.push({
+          item_no: pos.item_no ?? null,
+          code: `${result.work.base_type}${result.work.code}`,
+          quote_unit: result.unit_check.baseQuote ?? pos.quote_unit,
+          norm_unit: result.work.measure_unit,
+          ratio: result.unit_check.ratio,
+          reason: result.unit_check.reason,
+        });
+        continue;
+      }
+
+      // Предохранитель: норматив расходится с ценой КП больше чем на порядок —
+      // почти всегда это ошибка единиц, а не реальное сравнение.
+      let magnitudeWarning = null;
+      if (pos.market_total != null && t.total > 0) {
+        const ratio = pos.market_total / t.total;
+        if (ratio > 10 || ratio < 0.1) {
+          magnitudeWarning = `норматив и цена КП расходятся в ${(ratio >= 1 ? ratio : 1 / ratio).toFixed(0)} раз — вероятна ошибка единиц`;
+        }
+      }
+
       lines.push({
         item_no: pos.item_no ?? null,
         vedomost_name: pos.name ?? null,
@@ -41,6 +68,7 @@ export function calcEstimate(db, positions) {
         totals: t,
         market_total: pos.market_total ?? null,
         flags: result.flags,
+        magnitude_warning: magnitudeWarning,
         nr_code: result.norms.nr_code,
         sp_code: result.norms.sp_code,
       });
@@ -65,5 +93,5 @@ export function calcEstimate(db, positions) {
       }
     : null;
 
-  return { lines, totals, market, errors, position_count: lines.length };
+  return { lines, totals, market, errors, blocked, position_count: lines.length };
 }

@@ -7,6 +7,8 @@
  * значением по умолчанию.
  */
 
+import { compareUnits } from './units.js';
+
 /** Территория → колонка норматива НР в work_type_norms. */
 const TERRITORY_COLUMN = {
   'Территория': 'overhead_territory_pct',
@@ -22,6 +24,7 @@ export const FLAGS = {
   NRSP_MISSING: 'норматив_не_найден',
   PRICE_MISSING: 'цена_не_найдена',
   UNIT_MISMATCH: 'единицы_измерения_не_совпадают',
+  POSITION_UNIT_MISMATCH: 'единицы_позиции_не_совпадают',
 };
 
 /** Округление до 6 знаков — снимает артефакты двоичной арифметики. */
@@ -104,6 +107,8 @@ export function calcPosition(db, input) {
     main_material_quantities = {},
     resource_quantities = {},
     material_substitutions = {},
+    quote_unit,             // единица из КП/ведомости — для детерминированной сверки
+    quantity_in_norm_units, // true, если объём уже задан в единицах нормы (сверку снимаем)
     options = {},
   } = input;
 
@@ -123,6 +128,16 @@ export function calcPosition(db, input) {
   if (!territoryColumn) throw new Error(`Неизвестный тип территории: ${territory_type}`);
 
   const flags = new Set();
+
+  // --- детерминированная сверка единицы позиции (задача 1 доработок) --------
+  // Единицу из КП сверяем с единицей нормы В КОДЕ, не полагаясь на модель.
+  // При расхождении (в т.ч. кратности «м²»/«100 м²») ставим флаг: объём должен
+  // быть введён в единицах нормы, иначе позиция завышена/занижена в N раз.
+  let unitCheck = null;
+  if (quote_unit && !quantity_in_norm_units) {
+    unitCheck = compareUnits(quote_unit, work.measure_unit);
+    if (unitCheck.match === false) flags.add(FLAGS.POSITION_UNIT_MISMATCH);
+  }
   const lines = [];
   let fotWorkers = 0;
   let fotDrivers = 0;
@@ -190,6 +205,7 @@ export function calcPosition(db, input) {
     },
     period: { id: period.id, region: period.region, year: period.year, quarter: period.quarter },
     input: { quantity: volume, territory_type, norm_coefficient: kNorm, vat: Boolean(options.vat) },
+    unit_check: unitCheck,   // детерминированная сверка единицы КП с единицей нормы
     lines,
     totals: {
       labor: r2(totals.labor),                    // ОТ
