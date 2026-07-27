@@ -61,11 +61,17 @@ export function calcEstimate(db, positions) {
 
       // Предохранитель: норматив расходится с ценой КП больше чем на порядок —
       // почти всегда это ошибка единиц, а не реальное сравнение.
+      // Мягче: норматив заметно ВЫШЕ КП — в контексте проверки сметы это
+      // аномалия (обычно КП ≥ норматива), сигнал к переподбору нормы. Расчёт
+      // не трогаем — это вопрос подбора, не арифметики.
       let magnitudeWarning = null;
+      let rematchHint = null;
       if (pos.market_total != null && t.total > 0) {
-        const ratio = pos.market_total / t.total;
-        if (ratio > 10 || ratio < 0.1) {
-          magnitudeWarning = `норматив и цена КП расходятся в ${(ratio >= 1 ? ratio : 1 / ratio).toFixed(0)} раз — вероятна ошибка единиц`;
+        const kpToNorm = pos.market_total / t.total;
+        if (kpToNorm > 10 || kpToNorm < 0.1) {
+          magnitudeWarning = `норматив и цена КП расходятся в ${(kpToNorm >= 1 ? kpToNorm : 1 / kpToNorm).toFixed(0)} раз — вероятна ошибка единиц`;
+        } else if (t.total > pos.market_total * 1.5) {
+          rematchHint = `норматив в ${(t.total / pos.market_total).toFixed(1)} раза выше КП — проверьте подбор нормы (возможно, подобрана более трудоёмкая работа)`;
         }
       }
 
@@ -81,6 +87,7 @@ export function calcEstimate(db, positions) {
         market_total: pos.market_total ?? null,
         flags: result.flags,
         magnitude_warning: magnitudeWarning,
+        rematch_hint: rematchHint,
         nr_code: result.norms.nr_code,
         sp_code: result.norms.sp_code,
       });

@@ -489,6 +489,7 @@ function renderEstimate(est) {
     <div class="muted" style="margin-top:6px">в том числе НДС: ${money(t.vat)} · ФОТ: ${money(t.fot)}</div>
     ${est.auto_converted && est.auto_converted.length ? `<div class="um-box" style="margin-top:10px">Объём пересчитан по кратности (подтверждено): ${est.auto_converted.map((a) => `${esc(a.item_no ?? '')} ${a.from}→${a.to} «${esc(a.norm_unit)}»`).join('; ')}</div>` : ''}
     ${(est.lines.some((l) => l.magnitude_warning)) ? `<div class="um-box" style="margin-top:10px">⚠ ${est.lines.filter((l) => l.magnitude_warning).map((l) => `${esc(l.item_no ?? '')}: ${esc(l.magnitude_warning)}`).join('; ')}</div>` : ''}
+    ${(est.lines.some((l) => l.rematch_hint)) ? `<div class="um-box" style="margin-top:10px">↻ <b>Кандидаты на переподбор нормы:</b> ${est.lines.filter((l) => l.rematch_hint).map((l) => `${esc(l.item_no ?? '')} ${esc(l.base_type)}${esc(l.code)} — ${esc(l.rematch_hint)}`).join('; ')}</div>` : ''}
     ${market}
     ${est.blocked && est.blocked.length ? `<div class="um-box" style="margin-top:10px">⚠ <b>Заблокированы по единицам</b> (разные базовые единицы, вернитесь и введите объём в единицах нормы): ${est.blocked.map((b) => `${esc(b.item_no ?? '')} ${esc(b.code)} — ${esc(b.reason)}`).join('; ')}</div>` : ''}
     ${est.errors.length ? `<p class="err" style="margin-top:10px">Не посчитаны: ${est.errors.map((e) => esc((e.item_no ?? '') + ' ' + (e.code ?? '') + ': ' + e.error)).join('; ')}</p>` : ''}
