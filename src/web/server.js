@@ -203,18 +203,18 @@ export function createApp(db) {
     });
   }));
 
-  // Многопозиционный расчёт свода. Тело: { positions: [calcPosition-вход...] }
+  // Многопозиционный расчёт свода. Тело: { positions: [...], vat: bool }
   app.post('/api/estimate', wrap(async (req, res) => {
-    const { positions } = req.body ?? {};
+    const { positions, vat } = req.body ?? {};
     if (!Array.isArray(positions) || !positions.length) throw new Error('Пустой список позиций');
-    res.json(calcEstimate(db, positions));
+    res.json(calcEstimate(db, positions, { vat: Boolean(vat) }));
   }));
 
   // Экспорт свода в xlsx
   app.post('/api/estimate/export', wrap(async (req, res) => {
-    const { positions } = req.body ?? {};
+    const { positions, vat } = req.body ?? {};
     if (!Array.isArray(positions) || !positions.length) throw new Error('Пустой список позиций');
-    const estimate = calcEstimate(db, positions);
+    const estimate = calcEstimate(db, positions, { vat: Boolean(vat) });
     const buffer = await buildEstimateWorkbook(estimate);
     const name = `Смета_${new Date().toISOString().slice(0, 10)}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -257,7 +257,7 @@ async function buildWorkbook(result) {
   ws.addRow(['Ед. изм.', result.work.measure_unit, 'Объём', result.input.quantity]);
   ws.addRow(['Период цен', `${result.period.region}, ${result.period.quarter} кв. ${result.period.year}`]);
   ws.addRow(['Территория', result.input.territory_type, 'К норме', result.input.norm_coefficient,
-    'НДС', result.input.vat ? '20%' : 'нет']);
+    'НДС', result.input.vat ? '22%' : 'нет']);
   ws.addRow([]);
 
   const head = ws.addRow(['Код', 'Наименование', 'Ед.', 'На единицу', 'На объём', 'Цена, руб', 'Сумма, руб']);
@@ -290,7 +290,7 @@ async function buildWorkbook(result) {
     [`Сметная прибыль, ${t.profit_pct ?? '—'}%`, t.profit],
     ['Итого без НДС', t.total_without_vat],
   ];
-  if (result.input.vat) totals.push(['НДС 20%', t.vat]);
+  if (result.input.vat) totals.push(['НДС 22%', t.vat]);
   totals.push(['ВСЕГО ПО ПОЗИЦИИ', t.total]);
   totals.push([`на единицу нормы (${result.work.measure_unit})`, t.per_norm_unit]);
   for (const [label, value] of totals) {
@@ -334,6 +334,10 @@ async function buildEstimateWorkbook(estimate) {
 
   ws.addRow(['Смета (черновик по подбору ассистента)']).font = bold;
   ws.addRow(['Позиций:', estimate.position_count]);
+  ws.addRow(['Цены:', 'без НДС (сметные цены ФГИС ЦС и ставки труда — без НДС)']);
+  ws.addRow(['НДС:', estimate.vat_applied
+    ? `начислен на итог, ${Math.round(estimate.vat_rate * 100)}%`
+    : 'не начислен (смета в ценах без НДС)']);
   ws.addRow([]);
 
   const head = ws.addRow(['№ КП', 'Код ГЭСН', 'Наименование', 'Ед.', 'Кол-во',
@@ -349,10 +353,15 @@ async function buildEstimateWorkbook(estimate) {
 
   ws.addRow([]);
   const t = estimate.totals;
-  const totalRow = ws.addRow(['', '', 'ИТОГО ПО СМЕТЕ', '', '',
-    t.direct_costs, t.fot, t.overhead, t.profit, t.total]);
+  // Итог без НДС отдельной строкой, затем НДС на итог, затем итог с НДС —
+  // НДС не «в том числе» (в ценах его нет), а начислен сверху.
+  const totalRow = ws.addRow(['', '', 'ИТОГО ПО СМЕТЕ (без НДС)', '', '',
+    t.direct_costs, t.fot, t.overhead, t.profit, t.total_without_vat]);
   totalRow.font = bold;
-  ws.addRow(['', '', 'в том числе НДС', '', '', '', '', '', '', t.vat]);
+  if (estimate.vat_applied) {
+    ws.addRow(['', '', `НДС ${Math.round(estimate.vat_rate * 100)}% на итог`, '', '', '', '', '', '', t.vat]);
+    ws.addRow(['', '', 'ВСЕГО С НДС', '', '', '', '', '', '', t.total]).font = bold;
+  }
 
   if (estimate.market) {
     ws.addRow([]);

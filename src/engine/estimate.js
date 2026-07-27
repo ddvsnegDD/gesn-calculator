@@ -1,9 +1,14 @@
-import { calcPosition } from './calc-position.js';
+import { calcPosition, VAT_RATE } from './calc-position.js';
 
 /**
  * Многопозиционная смета (раздел 6 ТЗ этапа 5): контейнер над движком
  * расчёта одной позиции. Массив подтверждённых позиций → расчёт каждой
  * существующим calc-position → свод по статьям и итог.
+ *
+ * НДС: позиции считаются в ценах БЕЗ НДС (ФГИС ЦС публикует цены без НДС,
+ * тариф труда — зарплата, НДС не облагается). НДС по ставке VAT_RATE (22%)
+ * начисляется ОДИН раз на итог сметы отдельной строкой при options.vat —
+ * в цены не зашит, двойного счёта нет.
  *
  * Сохранения между сессиями нет (v2) — смета живёт в памяти/в экспорте.
  */
@@ -15,8 +20,10 @@ const r2 = (x) => (x === null || x === undefined ? null : Math.round(x * 100) / 
  * @param positions — массив входов calcPosition (base_type, work_code,
  *   quantity, period_id, ... плюс необязательные метаданные: item_no, name,
  *   market_total для сравнения с КП).
+ * @param options.vat — начислить НДС 22% на итог сметы (по умолчанию нет).
  */
-export function calcEstimate(db, positions) {
+export function calcEstimate(db, positions, options = {}) {
+  const applyVat = Boolean(options.vat);
   const lines = [];
   const totals = {
     labor: 0, machines: 0, drivers_salary: 0, materials: 0, main_materials: 0,
@@ -30,7 +37,8 @@ export function calcEstimate(db, positions) {
 
   for (const pos of positions) {
     try {
-      const result = calcPosition(db, pos);
+      // позиции считаем строго без НДС — НДС начисляется на итог свода
+      const result = calcPosition(db, { ...pos, options: { ...(pos.options ?? {}), vat: false } });
       const t = result.totals;
       const uc = result.unit_check;
 
@@ -103,14 +111,25 @@ export function calcEstimate(db, positions) {
 
   for (const k of Object.keys(totals)) totals[k] = r2(totals[k]);
 
+  // НДС начисляется на итог сметы отдельной строкой (позиции — без НДС).
+  // total_without_vat — сумма позиций без НДС; total — с НДС, если включён.
+  totals.total_without_vat = totals.total;   // позиции считались без НДС
+  totals.vat = applyVat ? r2(totals.total_without_vat * VAT_RATE) : 0;
+  totals.total = r2(totals.total_without_vat + totals.vat);
+
+  // Сравнение с КП ведём БЕЗ НДС (норматив без НДС vs цена КП): like-for-like.
   const market = hasMarket
     ? {
         market_total: totals.market_total,
-        normative_total: totals.total,
-        delta_rub: r2(totals.market_total - totals.total),
-        delta_pct: totals.total ? r2(((totals.market_total - totals.total) / totals.total) * 100) : null,
+        normative_total: totals.total_without_vat,
+        delta_rub: r2(totals.market_total - totals.total_without_vat),
+        delta_pct: totals.total_without_vat ? r2(((totals.market_total - totals.total_without_vat) / totals.total_without_vat) * 100) : null,
       }
     : null;
 
-  return { lines, totals, market, errors, blocked, auto_converted: autoConverted, position_count: lines.length };
+  return {
+    lines, totals, market, errors, blocked, auto_converted: autoConverted,
+    position_count: lines.length,
+    vat_applied: applyVat, vat_rate: VAT_RATE, prices_include_vat: false,
+  };
 }

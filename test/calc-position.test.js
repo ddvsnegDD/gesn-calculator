@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from '../src/db/index.js';
-import { calcPosition, nrspKey, currentPrice, FLAGS } from '../src/engine/calc-position.js';
+import { calcPosition, nrspKey, currentPrice, FLAGS, VAT_RATE } from '../src/engine/calc-position.js';
 import { formatPosition } from '../src/engine/format.js';
 
 const db = openDb();
@@ -250,8 +250,8 @@ test('коэффициент к норме умножает расходы, НД
     base_type: 'ГЭСН', work_code: '12-01-015-03', quantity: 1, period_id: PERIOD,
     options: { vat: true },
   });
-  assert.equal(withVat.totals.vat, round2(withVat.totals.total_without_vat * 0.2));
-  assert.equal(withVat.totals.total, round2(withVat.totals.total_without_vat * 1.2));
+  assert.equal(withVat.totals.vat, round2(withVat.totals.total_without_vat * VAT_RATE));
+  assert.equal(withVat.totals.total, round2(withVat.totals.total_without_vat * (1 + VAT_RATE)));
 });
 
 test('территория влияет только на НР', () => {

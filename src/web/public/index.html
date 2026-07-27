@@ -133,7 +133,7 @@
       </div>
       <div>
         <label>НДС</label>
-        <select id="vat"><option value="0">без НДС</option><option value="1">20%</option></select>
+        <select id="vat"><option value="0">без НДС</option><option value="1">22%</option></select>
       </div>
       <div>
         <label>Рыночная цена за <span class="unitLabel"></span>, руб</label>
@@ -443,9 +443,10 @@ $('btnBuildEstimate').onclick = async () => {
   if (!positions.length) return alert('Нет позиций к расчёту (подтвердите пересчёт или задайте объёмы в единицах нормы).');
   if (skipped.length && !confirm(`Пропущены: ${skipped.join(', ')}. Продолжить без них?`)) return;
 
+  ai.estimatePositions = positions;
   try {
     const estimate = await api('/api/estimate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ positions }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ positions, vat: ai.vat || false }),
     });
     ai.lastPositions = positions;
     renderEstimate(estimate);
@@ -478,15 +479,21 @@ function renderEstimate(est) {
 
   $('estimateBody').innerHTML = `
     <div class="muted">Позиций в смете: ${est.position_count}${est.errors.length ? ` · не посчитано: ${est.errors.length}` : ''}</div>
+    <div style="margin:8px 0"><label style="display:inline-flex; gap:8px; align-items:center; color:var(--ink)">
+      <input type="checkbox" id="vatToggle" ${est.vat_applied ? 'checked' : ''} style="width:auto"> начислить НДС ${Math.round(est.vat_rate * 100)}% на итог
+    </label>
+    <span class="muted" style="margin-left:10px">Смета в ценах <b>без НДС</b> (сметные цены ФГИС ЦС и ставки труда — без НДС).</span></div>
     <table style="margin-top:10px">
       <tr><th>№ КП</th><th>Код ГЭСН</th><th>Наименование</th><th class="num">Кол-во</th>
-          <th class="num">ПЗ</th><th class="num">НР</th><th class="num">СП</th><th class="num">Всего</th></tr>
+          <th class="num">ПЗ</th><th class="num">НР</th><th class="num">СП</th><th class="num">Всего без НДС</th></tr>
       ${rows}
-      <tr class="group"><td colspan="4">ИТОГО ПО СМЕТЕ</td>
+      <tr class="group"><td colspan="4">ИТОГО ПО СМЕТЕ (без НДС)</td>
         <td class="num">${money(t.direct_costs)}</td><td class="num">${money(t.overhead)}</td>
-        <td class="num">${money(t.profit)}</td><td class="num">${money(t.total)}</td></tr>
+        <td class="num">${money(t.profit)}</td><td class="num">${money(t.total_without_vat)}</td></tr>
+      ${est.vat_applied ? `<tr><td colspan="7">НДС ${Math.round(est.vat_rate * 100)}% на итог</td><td class="num">${money(t.vat)}</td></tr>
+      <tr class="group"><td colspan="7">ВСЕГО С НДС</td><td class="num">${money(t.total)}</td></tr>` : ''}
     </table>
-    <div class="muted" style="margin-top:6px">в том числе НДС: ${money(t.vat)} · ФОТ: ${money(t.fot)}</div>
+    <div class="muted" style="margin-top:6px">ФОТ: ${money(t.fot)}${est.vat_applied ? '' : ' · НДС не начислен'}</div>
     ${est.auto_converted && est.auto_converted.length ? `<div class="um-box" style="margin-top:10px">Объём пересчитан по кратности (подтверждено): ${est.auto_converted.map((a) => `${esc(a.item_no ?? '')} ${a.from}→${a.to} «${esc(a.norm_unit)}»`).join('; ')}</div>` : ''}
     ${(est.lines.some((l) => l.magnitude_warning)) ? `<div class="um-box" style="margin-top:10px">⚠ ${est.lines.filter((l) => l.magnitude_warning).map((l) => `${esc(l.item_no ?? '')}: ${esc(l.magnitude_warning)}`).join('; ')}</div>` : ''}
     ${(est.lines.some((l) => l.rematch_hint)) ? `<div class="um-box" style="margin-top:10px">↻ <b>Кандидаты на переподбор нормы:</b> ${est.lines.filter((l) => l.rematch_hint).map((l) => `${esc(l.item_no ?? '')} ${esc(l.base_type)}${esc(l.code)} — ${esc(l.rematch_hint)}`).join('; ')}</div>` : ''}
@@ -495,9 +502,20 @@ function renderEstimate(est) {
     ${est.errors.length ? `<p class="err" style="margin-top:10px">Не посчитаны: ${est.errors.map((e) => esc((e.item_no ?? '') + ' ' + (e.code ?? '') + ': ' + e.error)).join('; ')}</p>` : ''}
     <div style="margin-top:16px"><button id="btnEstExport">Экспорт сметы в Excel</button></div>`;
 
+  // тумблер НДС — пересчёт свода с/без НДС
+  const vt = $('vatToggle');
+  if (vt) vt.onchange = async () => {
+    ai.vat = vt.checked;
+    const estimate = await api('/api/estimate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ positions: ai.estimatePositions, vat: ai.vat }),
+    });
+    renderEstimate(estimate);
+  };
+
   $('btnEstExport').onclick = async () => {
     const res = await fetch('/api/estimate/export', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ positions: ai.lastPositions }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ positions: ai.lastPositions, vat: ai.vat || false }),
     });
     if (!res.ok) return alert('Не удалось выгрузить смету');
     const blob = await res.blob();
@@ -753,7 +771,7 @@ function renderResult(r) {
     [`Сметная прибыль, ${t.profit_pct ?? '—'}%`, t.profit],
     ['Итого без НДС', t.total_without_vat],
   ];
-  if (r.input.vat) totalRows.push(['НДС 20%', t.vat]);
+  if (r.input.vat) totalRows.push(['НДС 22%', t.vat]);
   totalRows.push(['ВСЕГО ПО ПОЗИЦИИ', t.total, true]);
   totalRows.push([`на единицу нормы (${r.work.measure_unit})`, t.per_norm_unit]);
 
@@ -773,7 +791,7 @@ function renderResult(r) {
   $('resultBody').innerHTML = `
     <div class="muted">${esc(r.work.base_type)}${esc(r.work.code)} · объём ${r.input.quantity} ${esc(r.work.measure_unit)}
       · ${esc(r.period.region)}, ${r.period.quarter} кв. ${r.period.year}
-      · территория ${esc(r.input.territory_type)} · к норме ${r.input.norm_coefficient} · НДС ${r.input.vat ? '20%' : 'нет'}</div>
+      · территория ${esc(r.input.territory_type)} · к норме ${r.input.norm_coefficient} · НДС ${r.input.vat ? '22%' : 'нет'}</div>
     ${r.flags.length ? `<div class="flags">${r.flags.map((f) => `<span class="flag">${esc(f)}</span>`).join('')}</div>` : ''}
     <table style="margin-top:12px">
       <tr><th>Код</th><th>Наименование</th><th>Ед.</th><th class="num">На единицу</th>

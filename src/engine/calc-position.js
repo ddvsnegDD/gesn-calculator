@@ -9,6 +9,12 @@
 
 import { compareUnits } from './units.js';
 
+/**
+ * Ставка НДС. С 01.01.2026 — 22% (ранее 20%). Смета считается в ценах без
+ * НДС, эта ставка начисляется на итог отдельной строкой при options.vat.
+ */
+export const VAT_RATE = 0.22;
+
 /** Территория → колонка норматива НР в work_type_norms. */
 const TERRITORY_COLUMN = {
   'Территория': 'overhead_territory_pct',
@@ -195,10 +201,13 @@ export function calcPosition(db, input) {
   const profit = spPct === null || spPct === undefined ? null : r2((fot * spPct) / 100);
 
   // --- Итоги ---------------------------------------------------------------
+  // Смета считается в ценах БЕЗ НДС: сметные цены ФГИС ЦС и ставки труда
+  // публикуются без НДС (базисные цены сверены 45/45, тариф труда — зарплата,
+  // НДС не облагается). НДС начисляется на итог отдельной строкой по ставке
+  // VAT_RATE (22% с 01.01.2026), включается опцией — в цены не зашит.
   const direct = r2(totals.labor + totals.machines + totals.materials + totals.mainMaterials);
   const totalNoVat = r2(direct + (overhead ?? 0) + (profit ?? 0));
-  const vatRate = options.vat ? 0.2 : 0;
-  const vat = options.vat ? r2(totalNoVat * vatRate) : 0;
+  const vat = options.vat ? r2(totalNoVat * VAT_RATE) : 0;
   const total = r2(totalNoVat + vat);
 
   const perNormUnit = volume === 0 ? null : r2(total / volume);
